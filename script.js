@@ -1,23 +1,69 @@
 // --- External Library Helpers ---
 const PDF_WORKER_SRC = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.5.136/pdf.worker.min.mjs';
-const XLSX_MODULE_URL = 'https://cdn.jsdelivr.net/npm/xlsx@0.20.3/+esm';
+const XLSX_MODULE_URLS = [
+  'https://cdn.jsdelivr.net/npm/xlsx@0.20.3/xlsx.mjs',
+  'https://cdn.jsdelivr.net/npm/xlsx@0.20.3/dist/xlsx.mjs',
+  'https://cdn.sheetjs.com/xlsx-0.20.3/package/xlsx.mjs',
+];
+const XLSX_SCRIPT_URL = 'https://cdn.jsdelivr.net/npm/xlsx@0.20.3/dist/xlsx.full.min.js';
 
 let xlsxPromise;
 async function ensureXLSX() {
   if (typeof XLSX !== 'undefined') return XLSX;
   if (!xlsxPromise) {
-    xlsxPromise = import(XLSX_MODULE_URL)
-      .then(mod => {
-        const lib = mod?.default || mod;
-        if (typeof window !== 'undefined' && !window.XLSX) window.XLSX = lib;
-        return lib;
-      })
+    xlsxPromise = (async () => {
+      for (const url of XLSX_MODULE_URLS) {
+        try {
+          const mod = await import(url);
+          const lib = mod?.default || mod?.XLSX || mod;
+          if (typeof window !== 'undefined' && !window.XLSX) window.XLSX = lib;
+          return lib;
+        } catch (err) {
+          console.warn(`Failed to import XLSX from ${url}`, err);
+        }
+      }
+
+      return loadXLSXViaScript();
+    })()
       .catch(err => {
         console.error('Failed to load XLSX library', err);
         throw err;
       });
   }
   return xlsxPromise;
+}
+
+function loadXLSXViaScript() {
+  if (typeof document === 'undefined') {
+    return Promise.reject(new Error('Cannot load XLSX script outside the browser environment.'));
+  }
+
+  return new Promise((resolve, reject) => {
+    if (typeof XLSX !== 'undefined') {
+      resolve(XLSX);
+      return;
+    }
+
+    const existing = document.querySelector(`script[src="${XLSX_SCRIPT_URL}"]`);
+    if (existing) {
+      existing.addEventListener('load', () => {
+        if (typeof XLSX !== 'undefined') resolve(XLSX);
+        else reject(new Error('XLSX global not found after script load.'));
+      }, { once: true });
+      existing.addEventListener('error', () => reject(new Error(`Failed to load XLSX script ${XLSX_SCRIPT_URL}`)), { once: true });
+      return;
+    }
+
+    const script = document.createElement('script');
+    script.src = XLSX_SCRIPT_URL;
+    script.async = true;
+    script.onload = () => {
+      if (typeof XLSX !== 'undefined') resolve(XLSX);
+      else reject(new Error('XLSX global not found after script load.'));
+    };
+    script.onerror = () => reject(new Error(`Failed to load XLSX script ${XLSX_SCRIPT_URL}`));
+    document.head.appendChild(script);
+  });
 }
 
 let pdfjsPromise;
