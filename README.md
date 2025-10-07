@@ -1,12 +1,13 @@
 # Remittance Reader
 
-A client-side web application for automatically parsing and processing remittance payment files. Upload PDF, Excel, or CSV files to auto-fill payment information and invoice details.
+A client-side web application for AI-assisted capture of remittance advice, invoices, and bills. Upload PDF, image, or email files to auto-fill payment information and invoice details—similar to the Intuit Assist experience inside QuickBooks.
 
 ![Remittance Reader Interface](https://img.shields.io/badge/status-beta-teal)
 
 ## 🌟 Features
 
-- **Multi-Format Support**: Parse PDF, XLSX, XLS, and CSV files
+- **AI Capture Flow**: Drag-and-drop documents and let the capture engine rebuild payment data automatically
+- **Multi-Channel Input**: Works with PDF remittances, scanned images (OCR), or forwarded emails/text files
 - **Intelligent Extraction**: Automatically detects and extracts:
   - Customer/Payer name
   - Payment date
@@ -15,7 +16,8 @@ A client-side web application for automatically parsing and processing remittanc
   - Open balances
 - **QuickBooks-Style Interface**: Clean, professional design inspired by accounting software
 - **Real-Time Calculations**: Automatic totaling and credit calculations
-- **Export Options**: Export to CSV or XLSX format
+- **Category Suggestions**: Lightweight heuristics recommend possible expense categories based on document language
+- **Export Options**: Export captured data to CSV for reconciliation
 - **Drag & Drop**: Easy file upload via drag-and-drop
 - **Completely Client-Side**: All processing happens in your browser - no server required
 - **Privacy First**: Your files never leave your device
@@ -77,9 +79,9 @@ remittance-reader/
 ### 1. Upload a File
 
 **Supported formats:**
-- **PDF**: Text-based remittance PDFs
-- **Excel**: `.xlsx` or `.xls` spreadsheets
-- **CSV**: Comma-separated value files
+- **PDF**: Text-based or generated remittance PDFs
+- **Images**: `.png`, `.jpg`, `.jpeg` (processed with OCR)
+- **Email/Text**: `.eml`, `.msg`, `.txt` files for forwarded remittance emails
 
 **Upload methods:**
 - Click the "Autofill from file" button
@@ -100,7 +102,7 @@ You can manually:
 
 ### 3. Export or Print
 
-- **Export CSV/XLSX**: Download the processed data
+- **Export CSV**: Download the processed data
 - **Print**: Print a formatted payment record
 - **Record and close**: Save your work (displays confirmation)
 
@@ -114,48 +116,39 @@ Change the currency in the sidebar to format amounts correctly:
 - EUR
 - GBP
 
-### Parsing Mode
+### Document Type Hint
 
-Choose how to parse your files:
-- **Auto-detect** (recommended): Automatically determines file type
-- **PDF**: Force PDF text extraction
-- **Spreadsheet**: Force Excel parsing
-- **CSV**: Force CSV parsing
+Help the capture engine understand the document you uploaded:
+- **Auto-detect** (recommended): Let the system decide
+- **Customer invoice**: Prioritises customer-facing wording when extracting
+- **Vendor bill**: Looks for supplier-style terminology
+- **Receipt**: Collapses totals into a single captured line item when needed
 
-## 📊 File Format Requirements
+## 📊 Capture Tips
 
-### Excel/CSV Files
+### PDFs
 
-The app intelligently maps columns. It looks for headers like:
+- Text-based PDFs produce the cleanest results
+- Include clear labels such as "Invoice", "Amount", "Total", and "Payment Date"
+- Export remittance summaries straight from your accounting/banking portal when possible
 
-**Invoices:**
-- `Invoice`, `Inv`, `Invoice #`, `Document`, `Doc #`, `Reference`
+### Images / Receipts
 
-**Amounts:**
-- `Amount`, `Paid`, `Payment`, `Apply`, `Applied`, `Total`
+- Ensure the entire document is in frame with good lighting
+- Higher contrast between text and background improves OCR accuracy
+- Crop unrelated notes or scribbles before uploading
 
-**Dates:**
-- `Date`, `Payment Date`, `Remittance Date`
+### Emails / Text Files
 
-**Payer:**
-- `Payer`, `Customer`, `Client`, `Company`, `From`
-
-**Open Balance:**
-- `Open`, `Balance`, `Open Balance`
-
-### PDF Files
-
-For best results, PDFs should contain:
-- Clear text (not scanned images)
-- Labeled fields like "Payer:", "Date:", "Invoice:"
-- Amounts in standard currency format ($1,234.56)
+- Forward machine-generated remittance emails directly as `.eml`/`.msg`
+- Keep the message body intact so the parser can understand vendor and totals
 
 ## 🔧 Dependencies
 
 All dependencies are loaded via CDN:
 
-- **SheetJS (xlsx.js)** v0.20.3 - Excel file parsing
 - **PDF.js** v4.5.136 - PDF text extraction
+- **Tesseract.js** v5 - OCR for images and scanned PDFs
 - **Google Fonts (Inter)** - UI typography
 
 No build process or npm install required!
@@ -201,16 +194,16 @@ Edit `styles.css` and modify the CSS variables:
 
 ## 🐛 Troubleshooting
 
-### "Parse failed" error
+### "Capture failed" error
 
-- **Check file format**: Ensure it's a valid PDF, XLSX, or CSV
-- **Try different parsing mode**: Switch from auto-detect to specific format
+- **Check file format**: Ensure it's a supported PDF, image, or email file
+- **Try a different document hint**: Switch between invoice, bill, or receipt to guide extraction
 - **Check browser console**: Open DevTools (F12) for detailed errors
 
 ### Invoice data not extracted
 
-- **PDF files**: Must be text-based (not scanned images)
-- **Spreadsheets**: Check column headers match expected formats
+- **PDF files**: Text-based exports work best; scanned PDFs may need OCR via the image flow
+- **Images**: Retake the photo with better lighting or higher resolution
 - **Manual entry**: You can always enter data manually after upload
 
 ### Amounts not calculating
@@ -233,8 +226,9 @@ Want to contribute or modify the code?
 ### Testing
 
 Test with sample files:
-- Create a CSV with columns: `Invoice, Amount, Date, Payer`
-- Try a simple PDF with text like "Invoice: 1234, Amount: $500"
+- Export a remittance PDF from your accounting system
+- Snap a photo of a receipt or bill with your phone and upload it
+- Forward a vendor remittance email and save it as `.eml`
 - Use the "Load sample" button for quick testing
 
 ## 📄 License
@@ -253,10 +247,10 @@ Contributions are welcome! Please:
 
 ## 💡 Tips
 
-- **Batch Processing**: Process multiple remittances by exporting to XLSX for record-keeping
+- **Batch Processing**: Capture documents one at a time, then merge CSV exports in your spreadsheet tool
 - **Keyboard Shortcuts**: Tab through fields for faster data entry
 - **Print to PDF**: Use the Print button and "Save as PDF" for digital records
-- **Templates**: Create Excel templates with correct headers for consistent uploads
+- **Document hygiene**: Remove sticky notes or handwriting before scanning for better OCR results
 
 ## 📧 Support
 

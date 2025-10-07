@@ -1,108 +1,5 @@
-// --- External Library Helpers ---
 const PDF_WORKER_SRC = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.5.136/pdf.worker.min.mjs';
-const LOCAL_XLSX_MODULE_URL = new URL('./vendor/xlsx.mjs', import.meta.url).href;
-const LOCAL_XLSX_SCRIPT_URL = new URL('./vendor/xlsx.full.min.js', import.meta.url).href;
-
-const XLSX_MODULE_URLS = [
-  LOCAL_XLSX_MODULE_URL,
-  'https://cdn.jsdelivr.net/npm/xlsx@0.18.5/xlsx.mjs',
-  'https://unpkg.com/xlsx@0.18.5/xlsx.mjs',
-];
-
-const XLSX_SCRIPT_URLS = [
-  LOCAL_XLSX_SCRIPT_URL,
-  'https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js',
-  'https://unpkg.com/xlsx@0.18.5/dist/xlsx.full.min.js',
-];
-
-let xlsxPromise;
-async function ensureXLSX() {
-  if (typeof XLSX !== 'undefined') return XLSX;
-  if (!xlsxPromise) {
-    xlsxPromise = (async () => {
-      for (const url of XLSX_MODULE_URLS) {
-        try {
-          const mod = await import(url);
-          const lib = mod?.default || mod?.XLSX || mod;
-          if (typeof window !== 'undefined' && !window.XLSX) window.XLSX = lib;
-          return lib;
-        } catch (err) {
-          console.warn(`Failed to import XLSX from ${url}`, err);
-        }
-      }
-
-      return loadXLSXViaScript();
-    })()
-      .catch(err => {
-        console.error('Failed to load XLSX library', err);
-        throw err;
-      });
-  }
-  return xlsxPromise;
-}
-
-async function loadXLSXViaScript() {
-  if (typeof document === 'undefined') {
-    return Promise.reject(new Error('Cannot load XLSX script outside the browser environment.'));
-  }
-
-  if (typeof XLSX !== 'undefined') return XLSX;
-
-  let lastError;
-  for (const url of XLSX_SCRIPT_URLS) {
-    if (!url) continue;
-    try {
-      const lib = await injectScript(url);
-      if (lib) return lib;
-    } catch (err) {
-      lastError = err;
-      console.warn(`Failed to load XLSX script ${url}`, err);
-    }
-  }
-
-  throw lastError || new Error('Unable to load any XLSX script source.');
-}
-
-function injectScript(url) {
-  return new Promise((resolve, reject) => {
-    if (typeof XLSX !== 'undefined') {
-      resolve(XLSX);
-      return;
-    }
-
-    const scripts = Array.from(document.getElementsByTagName('script'));
-    const existing = scripts.find(s => s.src === url || s.getAttribute('data-xlsx-src') === url);
-
-    const attachHandlers = (el) => {
-      const onLoad = () => {
-        el.setAttribute('data-xlsx-loaded', 'true');
-        if (typeof XLSX !== 'undefined') resolve(XLSX);
-        else reject(new Error('XLSX global not found after script load.'));
-      };
-      const onError = () => reject(new Error(`Failed to load XLSX script ${url}`));
-      el.addEventListener('load', onLoad, { once: true });
-      el.addEventListener('error', onError, { once: true });
-    };
-
-    if (existing) {
-      if (existing.getAttribute('data-xlsx-loaded') === 'true' || existing.readyState === 'complete') {
-        if (typeof XLSX !== 'undefined') {
-          resolve(XLSX);
-          return;
-        }
-      }
-      attachHandlers(existing);
-      return;
-    }
-
-    const script = document.createElement('script');
-    script.src = url;
-    script.async = true;
-    script.setAttribute('data-xlsx-src', url);
-    attachHandlers(script);
-    document.head.appendChild(script);
-  });
-}
+const TESSERACT_SRC = 'https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js';
 
 let pdfjsPromise;
 async function ensurePDF() {
@@ -124,10 +21,6 @@ async function ensurePDF() {
         }
         if (typeof window !== 'undefined' && !window.pdfjsLib) window.pdfjsLib = lib;
         return lib;
-      })
-      .catch(err => {
-        console.error('Failed to load PDF.js library', err);
-        throw err;
       });
   }
 
@@ -138,9 +31,28 @@ async function ensurePDF() {
   return lib;
 }
 
-// --- Helpers ---
+let tesseractPromise;
+async function ensureTesseract() {
+  if (typeof Tesseract !== 'undefined') return Tesseract;
+  if (!tesseractPromise) {
+    tesseractPromise = new Promise((resolve, reject) => {
+      const script = document.createElement('script');
+      script.src = TESSERACT_SRC;
+      script.async = true;
+      script.onload = () => {
+        if (typeof Tesseract !== 'undefined') resolve(Tesseract);
+        else reject(new Error('Tesseract failed to initialize.'));
+      };
+      script.onerror = () => reject(new Error('Failed to load OCR engine.'));
+      document.head.appendChild(script);
+    });
+  }
+  return tesseractPromise;
+}
+
 const $ = (q) => document.querySelector(q);
 const rowsEl = $('#rows');
+const statusEl = $('#status');
 
 const fmtMoney = (n, cur = ($('#currency').value || 'USD')) => {
   try {
@@ -167,8 +79,23 @@ const toast = (msg) => {
   setTimeout(() => t.classList.add('hidden'), 3000);
 };
 
-// State
-let state = { payer: '', date: '', amountReceived: 0, invoices: [] };
+const statusDefault = 'Review before you save.';
+
+const initialState = () => ({
+  payer: '',
+  vendor: '',
+  date: '',
+  amountReceived: 0,
+  invoices: [],
+  suggestions: []
+});
+
+let state = initialState();
+
+function resetState() {
+  state = initialState();
+  render();
+}
 
 function render() {
   $('#payer').value = state.payer || '';
@@ -180,9 +107,10 @@ function render() {
   rowsEl.innerHTML = '';
   let appliedSum = 0;
   state.invoices.forEach((row, idx) => {
-    appliedSum += Number(row.applied || 0);
-    const originalAmount = row.original ?? row.open ?? row.applied ?? 0;
-    const openAmount = row.open ?? Math.max(0, originalAmount - (row.applied ?? 0));
+    const appliedVal = Number(row.applied || 0);
+    appliedSum += appliedVal;
+    const originalAmount = row.original ?? row.open ?? appliedVal;
+    const openAmount = row.open ?? Math.max(0, originalAmount - appliedVal);
     const metaParts = [];
     if (row.description) metaParts.push(`<div class="invoice-desc">${escapeHTML(row.description)}</div>`);
     if (typeof row.discount === 'number' && row.discount) {
@@ -191,7 +119,7 @@ function render() {
 
     const tr = document.createElement('tr');
     tr.innerHTML = `
-      <td><input type="checkbox" ${row.applied > 0 ? 'checked' : ''} data-idx="${idx}" class="chk"/></td>
+      <td><input type="checkbox" ${appliedVal > 0 ? 'checked' : ''} data-idx="${idx}" class="chk"/></td>
       <td>
         <div class="invoice-cell">
           <div class="invoice-number">${escapeHTML(row.invoice || '')}</div>
@@ -204,7 +132,7 @@ function render() {
       <td>${fmtMoney(originalAmount)}</td>
       <td>${fmtMoney(openAmount)}</td>
       <td>
-        <input data-idx="${idx}" class="amt amount-input" value="${row.applied ? fmtMoney(row.applied) : ''}"/>
+        <input data-idx="${idx}" class="amt amount-input" value="${appliedVal ? fmtMoney(appliedVal) : ''}"/>
       </td>`;
     rowsEl.appendChild(tr);
   });
@@ -216,38 +144,425 @@ function render() {
 }
 
 function upsertInvoice(partial) {
-  const id = partial.invoice?.trim();
+  const id = partial.invoice?.toString().trim();
   if (!id) return;
-  const found = state.invoices.find(r => String(r.invoice).trim() === id);
-  if (found) {
-    Object.assign(found, partial);
+  const normalized = {
+    invoice: id,
+    applied: Number.isFinite(partial.applied) ? partial.applied : parseMoney(partial.applied),
+    open: Number.isFinite(partial.open) ? partial.open : parseMoney(partial.open),
+    original: Number.isFinite(partial.original) ? partial.original : undefined,
+    date: partial.date ? normalizeDate(partial.date) : ''
+  };
+  if ('discount' in partial) normalized.discount = Number.isFinite(partial.discount) ? partial.discount : parseMoney(partial.discount);
+  if (partial.description) normalized.description = partial.description;
+
+  if (!normalized.original && (normalized.open || normalized.applied)) {
+    normalized.original = Math.max(normalized.open || 0, normalized.applied || 0);
+  }
+  if (!normalized.open && normalized.applied) normalized.open = normalized.applied;
+
+  const existing = state.invoices.find(r => r.invoice === id);
+  if (existing) {
+    Object.assign(existing, normalized);
   } else {
-    const newRow = {
+    state.invoices.push({
       invoice: id,
-      open: partial.open ?? partial.applied ?? 0,
-      applied: partial.applied ?? 0,
-      date: partial.date || ''
-    };
-    if ('original' in partial) newRow.original = partial.original ?? newRow.open ?? newRow.applied;
-    else newRow.original = newRow.open ?? newRow.applied;
-    if ('discount' in partial) newRow.discount = partial.discount;
-    if (partial.description) newRow.description = partial.description;
-    state.invoices.push(newRow);
+      open: normalized.open ?? normalized.applied ?? 0,
+      applied: normalized.applied ?? 0,
+      original: normalized.original ?? normalized.open ?? normalized.applied ?? 0,
+      discount: normalized.discount,
+      description: normalized.description,
+      date: normalized.date
+    });
   }
 }
 
-// --- UI Events ---
-$('#btnClear').onclick = () => {
-  state = { payer: '', date: '', amountReceived: 0, invoices: [] };
-  render();
-  toast('Cleared');
-};
+function applyDocumentInsights(result) {
+  if (!result) return;
+  state.payer = result.customer || result.payer || state.payer;
+  state.vendor = result.vendor || state.vendor;
+  state.date = result.paymentDate || state.date || '';
+  if (Number.isFinite(result.totalAmount) && result.totalAmount > 0) {
+    state.amountReceived = result.totalAmount;
+  }
 
+  state.invoices = [];
+  result.lines?.forEach(line => upsertInvoice(line));
+  state.suggestions = result.suggestions || [];
+
+  if (!state.amountReceived && state.invoices.length) {
+    state.amountReceived = state.invoices.reduce((sum, row) => sum + Number(row.applied || 0), 0);
+  }
+}
+
+function updateStatus(msg) {
+  statusEl.textContent = msg || statusDefault;
+}
+
+class DocumentProcessor {
+  constructor(onStatus) {
+    this.onStatus = onStatus || (() => {});
+  }
+
+  resolveKind(file, docHint) {
+    const ext = extOf(file.name);
+    const mime = (file.type || '').toLowerCase();
+
+    if ([ 'xlsx', 'xls', 'csv' ].includes(ext)) {
+      const err = new Error('Spreadsheet capture is not available. Export the file as a PDF or image and retry.');
+      err.code = 'unsupported';
+      throw err;
+    }
+
+    if (ext === 'pdf' || mime === 'application/pdf') {
+      return { kind: 'pdf', label: 'PDF document', docType: docHint };
+    }
+
+    if (mime.startsWith('image/') || [ 'png', 'jpg', 'jpeg', 'heic', 'heif' ].includes(ext)) {
+      return { kind: 'image', label: 'image', docType: docHint || 'receipt' };
+    }
+
+    if ([ 'eml', 'msg', 'txt', 'html' ].includes(ext) || mime.startsWith('text/')) {
+      return { kind: 'text', label: 'email/text document', docType: docHint };
+    }
+
+    return { kind: 'text', label: 'document', docType: docHint };
+  }
+
+  async process(file, docHint) {
+    this.onStatus(`Analyzing ${file.name}…`);
+    const meta = this.resolveKind(file, docHint);
+    let text = '';
+
+    if (meta.kind === 'pdf') {
+      this.onStatus('Reading PDF pages…');
+      const pdfjs = await ensurePDF();
+      text = await this.extractPDFText(pdfjs, file);
+    } else if (meta.kind === 'image') {
+      this.onStatus('Running OCR on image…');
+      const tesseract = await ensureTesseract();
+      text = await this.extractImageText(tesseract, file);
+    } else {
+      this.onStatus('Reading document text…');
+      text = await file.text();
+    }
+
+    this.onStatus('Extracting key fields…');
+    const extraction = this.extractStructuredData(text, meta);
+    extraction.kind = meta.kind;
+    extraction.docType = meta.docType || 'auto';
+    extraction.rawText = text;
+    return extraction;
+  }
+
+  async extractPDFText(pdfjs, file) {
+    const data = new Uint8Array(await file.arrayBuffer());
+    const pdf = await pdfjs.getDocument({ data }).promise;
+    let fullText = '';
+
+    for (let p = 1; p <= pdf.numPages; p++) {
+      const page = await pdf.getPage(p);
+      const content = await page.getTextContent();
+      const text = content.items.map(i => i.str).join('\n');
+      fullText += '\n' + text;
+    }
+
+    return fullText;
+  }
+
+  async extractImageText(tesseract, file) {
+    const dataURL = await this.readFileAsDataURL(file);
+    const result = await tesseract.recognize(dataURL, 'eng');
+    return result?.data?.text || '';
+  }
+
+  readFileAsDataURL(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = () => reject(reader.error || new Error('Failed to read file.'));
+      reader.readAsDataURL(file);
+    });
+  }
+
+  extractStructuredData(text, meta) {
+    const cleaned = (text || '').replace(/\r/g, '\n');
+    const lines = cleaned.split(/\n+/).map(l => l.trim()).filter(Boolean);
+
+    const customer = this.findFirstMatch(lines, [
+      /(Bill\s*To|Customer|Client|Company)[:\-\s]*([A-Za-z0-9 &'.,-]+)/i,
+      /(Remitter|From)[:\-\s]*([A-Za-z0-9 &'.,-]+)/i
+    ]);
+
+    const vendor = this.findFirstMatch(lines, [
+      /(Vendor|Payee|Supplier|Issued\s*By)[:\-\s]*([A-Za-z0-9 &'.,-]+)/i,
+      /(Remit\s*To)[:\-\s]*([A-Za-z0-9 &'.,-]+)/i
+    ]);
+
+    const paymentDate = this.findDate(lines);
+    const totalAmount = this.findAmount(lines, [
+      /Total\s+(?:Amount|Payment|Paid|Due)[:\s]*([$\-+0-9,\.]+)/i,
+      /Amount\s+(?:Due|Paid)[:\s]*([$\-+0-9,\.]+)/i,
+      /Payment\s+Total[:\s]*([$\-+0-9,\.]+)/i
+    ]);
+
+    const linesData = this.extractLineItems(lines, meta?.docType);
+    const suggestions = this.suggestCategories(lines);
+
+    const derivedTotal = totalAmount || (linesData.length ? linesData.reduce((sum, row) => sum + Number(row.applied || 0), 0) : 0);
+
+    return {
+      customer: customer || '',
+      vendor: vendor || '',
+      paymentDate,
+      totalAmount: derivedTotal,
+      lines: linesData,
+      suggestions,
+      clearExisting: true
+    };
+  }
+
+  findFirstMatch(lines, regexes) {
+    for (const regex of regexes) {
+      for (const line of lines) {
+        const match = line.match(regex);
+        if (match) {
+          const value = match[2] || match[1];
+          if (value) return value.toString().trim();
+        }
+      }
+    }
+    return '';
+  }
+
+  findDate(lines) {
+    const dateRegexes = [
+      /(\b\d{1,2}[\/-]\d{1,2}[\/-]\d{2,4}\b)/,
+      /(\b\d{4}[\/-]\d{1,2}[\/-]\d{1,2}\b)/,
+      /([A-Za-z]{3,9}\s+\d{1,2},\s*\d{4})/
+    ];
+    for (const line of lines) {
+      for (const regex of dateRegexes) {
+        const match = line.match(regex);
+        if (match) {
+          const normalized = normalizeDate(match[1]);
+          if (normalized) return normalized;
+        }
+      }
+    }
+    return '';
+  }
+
+  findAmount(lines, regexes) {
+    for (const regex of regexes) {
+      for (const line of lines) {
+        const match = line.match(regex);
+        if (match) {
+          const amount = parseMoney(match[1] || match[0]);
+          if (amount) return amount;
+        }
+      }
+    }
+    return 0;
+  }
+
+  extractLineItems(lines, docTypeHint) {
+    const items = [];
+    const seen = new Set();
+    const amountRegex = /([$\-+]?\d{1,3}(?:,\d{3})*(?:\.\d{2}))/;
+
+    const considerLine = (invoice, amount, context) => {
+      if (!invoice || !amount) return;
+      const id = invoice.toString().trim();
+      if (!id) return;
+      if (seen.has(id) && amount === 0) return;
+      seen.add(id);
+
+      const applied = parseMoney(amount);
+      if (!applied) return;
+
+      const date = this.findNeighborDate(context);
+      const description = this.extractDescription(context, id);
+
+      items.push({
+        invoice: id,
+        applied,
+        open: applied,
+        original: applied,
+        date,
+        description: description || undefined
+      });
+    };
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      const invToken = line.match(/(?:Invoice|Inv|Bill|Reference|Statement)[#:\s-]*([A-Za-z0-9_-]{2,})/i);
+      if (invToken) {
+        const amt = this.findNeighborAmount(lines, i, amountRegex);
+        const context = { current: line, prev: lines[i - 1] || '', next: lines[i + 1] || '' };
+        considerLine(invToken[1], amt, context);
+        continue;
+      }
+
+      const columns = line.split(/\s{3,}|\t+/).map(col => col.trim()).filter(Boolean);
+      if (columns.length >= 2) {
+        const idCandidate = columns[0];
+        const amountCandidate = columns[columns.length - 1];
+        if (/^[A-Za-z0-9_-]{3,}$/.test(idCandidate) && amountRegex.test(amountCandidate)) {
+          const context = {
+            current: line,
+            prev: lines[i - 1] || '',
+            next: lines[i + 1] || ''
+          };
+          considerLine(idCandidate, amountCandidate, context);
+        }
+      }
+    }
+
+    if (!items.length && docTypeHint === 'receipt') {
+      const amount = this.findAmount(lines, [/Subtotal[:\s]*([$\-+0-9,\.]+)/i, /Total[:\s]*([$\-+0-9,\.]+)/i]);
+      if (amount) {
+        items.push({
+          invoice: 'RECEIPT',
+          applied: amount,
+          open: amount,
+          original: amount,
+          date: this.findDate(lines)
+        });
+      }
+    }
+
+    return items;
+  }
+
+  findNeighborAmount(lines, index, amountRegex) {
+    const offsets = [0, 1, -1, 2, -2];
+    for (const offset of offsets) {
+      const target = lines[index + offset];
+      if (!target) continue;
+      const match = target.match(amountRegex);
+      if (match) return match[1];
+    }
+    return '';
+  }
+
+  findNeighborDate({ current, next, prev }) {
+    const sources = [current, next, prev];
+    for (const src of sources) {
+      if (!src) continue;
+      const match = src.match(/(\b\d{1,2}[\/-]\d{1,2}[\/-]\d{2,4}\b|\b\d{4}[\/-]\d{1,2}[\/-]\d{1,2}\b)/);
+      if (match) {
+        const normalized = normalizeDate(match[1]);
+        if (normalized) return normalized;
+      }
+    }
+    return '';
+  }
+
+  extractDescription(context, invoiceId) {
+    const { current, prev, next } = context;
+    const removeId = (text) => text.replace(invoiceId, '').trim();
+    const candidates = [removeId(current), removeId(next || ''), removeId(prev || '')]
+      .map(s => s.replace(/[$\-+]?\d{1,3}(?:,\d{3})*(?:\.\d{2})/, '').trim())
+      .filter(Boolean);
+    return candidates[0] || '';
+  }
+
+  suggestCategories(lines) {
+    const joined = lines.join(' ').toLowerCase();
+    const suggestions = [];
+    if (/(software|subscription|license|saas)/.test(joined)) suggestions.push('Software & Subscriptions');
+    if (/(fuel|gas|diesel|mileage)/.test(joined)) suggestions.push('Fuel & Mileage');
+    if (/(office|supplies|stationery)/.test(joined)) suggestions.push('Office Supplies');
+    if (/(rent|lease)/.test(joined)) suggestions.push('Rent or Lease');
+    if (/(consulting|professional|legal)/.test(joined)) suggestions.push('Professional Services');
+    if (/(utilities|electric|water|power)/.test(joined)) suggestions.push('Utilities');
+    return suggestions.slice(0, 3);
+  }
+}
+
+function normalizeDate(v) {
+  if (!v) return '';
+  if (v instanceof Date && !isNaN(v)) return v.toISOString().slice(0, 10);
+  const s = String(v).trim();
+
+  const mdy = s.match(/(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})/);
+  if (mdy) {
+    const [_, m, d, y] = mdy;
+    const yyyy = y.length === 2 ? (Number(y) > 50 ? '19' + y : '20' + y.padStart(2, '0')) : y;
+    return `${String(yyyy).padStart(4, '0')}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+  }
+
+  const ymd = s.match(/(\d{4})[\-\/.](\d{1,2})[\-\/.](\d{1,2})/);
+  if (ymd) {
+    const [_, y, m, d] = ymd;
+    return `${String(y).padStart(4, '0')}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+  }
+
+  const long = new Date(s);
+  if (!isNaN(long)) return long.toISOString().slice(0, 10);
+  return '';
+}
+
+function extOf(name) {
+  return (name || '').split('.').pop().toLowerCase();
+}
+
+function csvEscape(value) {
+  if (value === null || value === undefined) return '';
+  const str = String(value);
+  if (/[",\n]/.test(str)) {
+    return '"' + str.replace(/"/g, '""') + '"';
+  }
+  return str;
+}
+
+function exportCSV() {
+  if (!state.invoices.length) {
+    toast('No line items to export yet.');
+    return;
+  }
+
+  const header = ['Customer', 'PaymentDate', 'Invoice', 'DueDate', 'AmountApplied', 'Description', 'Discount', 'OpenBalance'];
+  const rows = [header.join(',')];
+
+  state.invoices.forEach(row => {
+    rows.push([
+      csvEscape(state.payer || ''),
+      csvEscape(state.date || ''),
+      csvEscape(row.invoice || ''),
+      csvEscape(row.date || ''),
+      csvEscape(Number(row.applied || 0).toFixed(2)),
+      csvEscape(row.description || ''),
+      csvEscape(Number(row.discount || 0).toFixed(2)),
+      csvEscape(Number(row.open || 0).toFixed(2))
+    ].join(','));
+  });
+
+  const blob = new Blob([rows.join('\n')], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = `remittance_capture_${Date.now()}.csv`;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
+  toast('Exported CSV');
+}
+
+$('#btnExportCSV').onclick = exportCSV;
 $('#btnPrint').onclick = () => window.print();
 $('#btnSave').onclick = () => toast('Payment recorded successfully!');
 $('#currency').onchange = () => render();
 
-// Edit events
+$('#payer').oninput = e => { state.payer = e.target.value; render(); };
+$('#paydate').oninput = e => { state.date = e.target.value; render(); };
+$('#amountReceived').oninput = e => {
+  state.amountReceived = parseMoney(e.target.value);
+  render();
+};
+
 rowsEl.addEventListener('input', (e) => {
   if (e.target.classList.contains('amt')) {
     const idx = Number(e.target.dataset.idx);
@@ -260,51 +575,54 @@ rowsEl.addEventListener('change', (e) => {
   if (e.target.classList.contains('chk')) {
     const idx = Number(e.target.dataset.idx);
     const r = state.invoices[idx];
-    r.applied = e.target.checked ? (r.open || 0) : 0;
+    r.applied = e.target.checked ? (r.open || r.original || 0) : 0;
     render();
   }
 });
 
-// Export
-async function exportData(type = 'csv') {
-  try {
-    const xlsx = await ensureXLSX();
-    const rows = state.invoices.map(r => ({
-      Payer: state.payer,
-      PaymentDate: state.date,
-      Invoice: r.invoice,
-      AmountApplied: r.applied,
-      OpenBalance: r.open,
-      OriginalAmount: r.original ?? r.open ?? r.applied,
-      Discount: r.discount ?? 0,
-      Description: r.description || '',
-    }));
-    const ws = xlsx.utils.json_to_sheet(rows);
-    const wb = xlsx.utils.book_new();
-    xlsx.utils.book_append_sheet(wb, ws, 'Remittance');
-    if (type === 'csv') xlsx.writeFile(wb, 'remittance.csv', { bookType: 'csv' });
-    else xlsx.writeFile(wb, 'remittance.xlsx', { bookType: 'xlsx' });
-    toast(`Exported as ${type.toUpperCase()}`);
-  } catch (err) {
-    console.error('Export failed', err);
-    toast('Export failed. Try refreshing the page.');
-  }
-}
-
-$('#btnExportCSV').onclick = () => exportData('csv');
-$('#btnExportXLSX').onclick = () => exportData('xlsx');
-
-// Header inputs
-$('#payer').oninput = e => { state.payer = e.target.value; render(); };
-$('#paydate').oninput = e => { state.date = e.target.value; render(); };
-$('#amountReceived').oninput = e => {
-  state.amountReceived = parseMoney(e.target.value);
-  render();
+$('#btnClear').onclick = () => {
+  resetState();
+  updateStatus(statusDefault);
+  toast('Cleared');
 };
 
-// --- File Handling ---
-const pick = $('#pick'), drop = $('#drop'), file = $('#file');
-pick.onclick = () => file.click();
+$('#btnSample').onclick = () => {
+  state = {
+    payer: 'Expedition Trailers',
+    vendor: 'Summit Manufacturing',
+    date: new Date().toISOString().slice(0, 10),
+    amountReceived: 4990.08,
+    invoices: [
+      {
+        invoice: '2085-33',
+        open: 4990.08,
+        applied: 4990.08,
+        original: 4990.08,
+        date: new Date().toISOString().slice(0, 10),
+        description: 'Trailer deposit'
+      },
+      {
+        invoice: '2085-34',
+        open: 10910.50,
+        applied: 0,
+        original: 10910.50,
+        date: new Date(Date.now() + 86400000).toISOString().slice(0, 10),
+        description: 'Balance due on invoice 2085-34'
+      }
+    ],
+    suggestions: ['Professional Services', 'Software & Subscriptions']
+  };
+  render();
+  updateStatus('Sample data loaded. Suggested categories: Professional Services, Software & Subscriptions');
+  toast('Sample data loaded');
+};
+
+const pick = $('#pick');
+const drop = $('#drop');
+const fileInput = $('#file');
+const docProcessor = new DocumentProcessor(updateStatus);
+
+pick.onclick = () => fileInput.click();
 
 ['dragenter', 'dragover'].forEach(ev =>
   drop.addEventListener(ev, e => {
@@ -323,310 +641,42 @@ pick.onclick = () => file.click();
 );
 
 drop.addEventListener('drop', (e) => {
-  const f = e.dataTransfer.files?.[0];
+  const f = e.dataTransfer?.files?.[0];
   if (f) handleFile(f);
 });
 
-file.onchange = (e) => {
+fileInput.onchange = (e) => {
   const f = e.target.files?.[0];
   if (f) handleFile(f);
 };
 
-function extOf(name) {
-  return (name || '').split('.').pop().toLowerCase();
-}
-
 async function handleFile(f) {
-  $('#status').textContent = `Reading "${f.name}"…`;
-  const forced = $('#mode').value;
-  const ext = extOf(f.name);
-  const kind = forced === 'auto' ?
-    (ext === 'pdf' ? 'pdf' :
-      (['xlsx', 'xls'].includes(ext) ? 'xlsx' :
-        (ext === 'csv' ? 'csv' : 'unknown')))
-    : forced;
-
   try {
-    if (kind === 'xlsx' || kind === 'csv') await parseSheet(f);
-    else if (kind === 'pdf') await parsePDF(f);
-    else if (f.type.startsWith('image/')) {
-      toast('Image OCR not included. Convert to PDF first.');
-    } else {
-      toast('Unsupported file type. Use PDF/XLSX/CSV.');
+    updateStatus(`Capturing ${f.name}…`);
+    const docHint = $('#mode').value;
+    const result = await docProcessor.process(f, docHint);
+    if (result.clearExisting !== false) {
+      state = initialState();
     }
+    applyDocumentInsights(result);
     render();
-    $('#status').textContent = `Parsed ${state.invoices.length} invoice line(s). Review and adjust.`;
-    toast('File loaded successfully!');
+
+    const summaryParts = [];
+    if (state.vendor) summaryParts.push(`Vendor: ${state.vendor}`);
+    if (state.payer) summaryParts.push(`Customer: ${state.payer}`);
+    summaryParts.push(`Extracted ${result.lines?.length || 0} line(s).`);
+    if (state.suggestions?.length) summaryParts.push(`Suggested categories: ${state.suggestions.join(', ')}`);
+    updateStatus(summaryParts.join(' '));
+
+    toast('Document captured successfully!');
   } catch (err) {
-    console.error(err);
-    toast('Parse error. See console for details.');
-    $('#status').textContent = 'Parse failed.';
+    console.error('Capture failed', err);
+    toast('Capture failed. See console for details.');
+    updateStatus(err?.message ? `Capture failed: ${err.message}` : 'Capture failed.');
   }
 }
 
-// --- Spreadsheet Parsing ---
-async function parseSheet(file) {
-  const xlsx = await ensureXLSX();
-
-  const data = await file.arrayBuffer();
-  const wb = xlsx.read(data, { type: 'array' });
-  const ws = wb.Sheets[wb.SheetNames[0]];
-  const rows = xlsx.utils.sheet_to_json(ws, { defval: '', raw: true });
-
-  const mapHeader = (keys, ...alts) => {
-    const joined = keys.map(k => k.toString().toLowerCase());
-    const find = (name) => joined.findIndex(k => alts.some(a => new RegExp(a, 'i').test(k)));
-    return {
-      invoiceIdx: find('^inv(oi|)ce|^inv\\b|document|doc #|ref(erence)?'),
-      amountIdx: find('amount|paid|payment|apply|applied|credited|remittance|total'),
-      openIdx: find('open|balance|bal'),
-      dateIdx: find('date|payment date|remittance date|deposit'),
-      payerIdx: find('payer|from|customer|client|company|remitter|supplier'),
-      discountIdx: find('discount|disc'),
-      descriptionIdx: find('description|memo|detail'),
-    };
-  };
-
-  if (rows.length === 0) return;
-  const headers = Object.keys(rows[0]);
-  const idxs = mapHeader(headers);
-
-  state.payer = state.payer || (idxs.payerIdx > -1 ? rows[0][headers[idxs.payerIdx]] : state.payer);
-  state.date = state.date || normalizeDate(rows[0][headers[idxs.dateIdx]]);
-
-  rows.forEach(r => {
-    const inv = idxs.invoiceIdx > -1 ? r[headers[idxs.invoiceIdx]] : (r.Invoice || r.INVOICE || r.Inv || r['Invoice #'] || r['Doc #']);
-    const amt = idxs.amountIdx > -1 ? r[headers[idxs.amountIdx]] : (r.Amount || r.Paid || r['Amount Paid']);
-    const open = idxs.openIdx > -1 ? r[headers[idxs.openIdx]] : (r.Open || r['Open Balance'] || 0);
-    const disc = idxs.discountIdx > -1 ? r[headers[idxs.discountIdx]] : (r.Discount || r['Discount Taken'] || 0);
-    const desc = idxs.descriptionIdx > -1 ? r[headers[idxs.descriptionIdx]] : (r.Description || '');
-    const d = idxs.dateIdx > -1 ? r[headers[idxs.dateIdx]] : (r.Date || '');
-
-    if (inv && (amt || open)) {
-      const appliedVal = parseMoney(amt);
-      const openVal = parseMoney(open) || appliedVal;
-      const discountVal = parseMoney(disc);
-      const originalVal = Math.max(openVal, appliedVal);
-      const descText = String(desc || '').trim();
-      upsertInvoice({
-        invoice: String(inv).trim(),
-        applied: appliedVal,
-        open: openVal,
-        original: originalVal,
-        discount: discountVal || undefined,
-        description: descText || undefined,
-        date: normalizeDate(d)
-      });
-    }
-  });
-
-  if (!state.amountReceived) {
-    state.amountReceived = state.invoices.reduce((a, b) => a + Number(b.applied || 0), 0);
-  }
-}
-
-function normalizeDate(v) {
-  if (!v) return '';
-  if (v instanceof Date) return v.toISOString().slice(0, 10);
-  const s = String(v).trim();
-
-  const mdy = s.match(/(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})/);
-  if (mdy) {
-    const [_, m, d, y] = mdy;
-    const yyyy = y.length === 2 ? ('20' + y) : y;
-    return `${yyyy.padStart(4, '0')}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
-  }
-
-  const ymd = s.match(/(\d{4})[\-\/.](\d{1,2})[\-\/.](\d{1,2})/);
-  if (ymd) {
-    const [_, y, m, d] = ymd;
-    return `${y}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
-  }
-
-  return '';
-}
-
-function parseMeyerRemittance(fullText) {
-  if (!/meyer distributing/i.test(fullText)) return false;
-
-  if (!state.payer) state.payer = 'Meyer Distributing';
-
-  const paymentDateMatch = fullText.match(/Payment Date\(s\)\s+(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})/i);
-  if (paymentDateMatch) {
-    state.date = state.date || normalizeDate(paymentDateMatch[1]);
-  }
-
-  const sectionSplit = fullText.split(/Document Number\s+Date\s+Description\s+Amount\s+Discount\s+Paid Amount/i);
-  let tableSection = sectionSplit[1];
-  if (!tableSection) {
-    tableSection = fullText.split(/Document Number/i)[1];
-  }
-  if (!tableSection) return false;
-
-  const lines = tableSection
-    .split(/\n+/)
-    .map(s => s.trim())
-    .filter(Boolean);
-
-  let added = 0;
-  for (let i = 0; i < lines.length; i++) {
-    let line = lines[i];
-    if (!line || /^total/i.test(line)) continue;
-    if (!/\b\d{5,}\b/.test(line)) continue;
-
-    let chunk = line;
-    let j = i;
-    while (((chunk.match(/\$?[-+]?\d{1,3}(?:,\d{3})*(?:\.\d{2})/g) || []).length < 3) && j + 1 < lines.length) {
-      const nextLine = lines[j + 1];
-      if (/^total/i.test(nextLine)) break;
-      chunk += ' ' + nextLine;
-      j++;
-    }
-
-    const amountMatches = chunk.match(/\$?[-+]?\d{1,3}(?:,\d{3})*(?:\.\d{2})/g);
-    if (!amountMatches || amountMatches.length < 3) continue;
-
-    const [amountStr, discountStr, paidStr] = amountMatches.slice(-3);
-    const docMatch = chunk.match(/\b(\d{5,})\b/);
-    if (!docMatch) continue;
-
-    const dateMatch = chunk.match(/\b\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4}\b/);
-
-    let descText = chunk;
-    descText = descText.replace(docMatch[0], ' ');
-    if (dateMatch) descText = descText.replace(dateMatch[0], ' ');
-    amountMatches.slice(-3).forEach(token => {
-      descText = descText.replace(token, ' ');
-    });
-    descText = descText.replace(/\s+/g, ' ').trim();
-
-    const original = parseMoney(amountStr);
-    const discount = parseMoney(discountStr);
-    const paid = parseMoney(paidStr);
-    const open = paid > 0 ? paid : Math.max(0, original - discount);
-
-    const payload = {
-      invoice: docMatch[1],
-      original,
-      discount,
-      applied: paid,
-      open,
-      date: normalizeDate(dateMatch?.[0] || '')
-    };
-    if (descText) payload.description = descText;
-
-    upsertInvoice(payload);
-    added++;
-    i = j;
-  }
-
-  if (added) {
-    if (!state.amountReceived) {
-      const totalPaidMatch = fullText.match(/Total Payment Amount[:\s]*\$?([\d,]+\.\d{2})/i);
-      if (totalPaidMatch) state.amountReceived = parseMoney(totalPaidMatch[1]);
-      else state.amountReceived = state.invoices.reduce((sum, row) => sum + Number(row.applied || 0), 0);
-    }
-    return true;
-  }
-
-  return false;
-}
-
-// --- PDF Parsing ---
-async function parsePDF(file) {
-  const pdfjs = await ensurePDF();
-
-  const data = new Uint8Array(await file.arrayBuffer());
-  const pdf = await pdfjs.getDocument({ data }).promise;
-  let fullText = '';
-
-  for (let p = 1; p <= pdf.numPages; p++) {
-    const page = await pdf.getPage(p);
-    const content = await page.getTextContent();
-    const text = content.items.map(i => i.str).join('\n');
-    fullText += '\n' + text;
-  }
-
-  const handled = parseMeyerRemittance(fullText);
-
-  if (!handled) {
-    // Extract payer
-    const payerMatch = fullText.match(/(?:From|Payer|Remitter|Customer)[:\-\s]*([A-Za-z0-9 &.,'\-]+)/i);
-    if (payerMatch) state.payer = state.payer || payerMatch[1].trim();
-
-    // Extract date
-    const dateMatch = fullText.match(/(?:Date|Payment Date|Remittance Date)[:\s]*([A-Za-z]{3,9}\s+\d{1,2},\s*\d{4}|\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4}|\d{4}[\-\/]\d{1,2}[\-\/]\d{1,2})/i);
-    if (dateMatch) state.date = state.date || normalizeDate(dateMatch[1]);
-
-    // Extract invoice lines
-    const lines = fullText.split(/\n+/).map(s => s.trim()).filter(Boolean);
-    const invRegex = /(invoice|inv|bill)[#:\s-]*([A-Za-z0-9_-]{2,})/i;
-    const amtRegex = /(\$?[-+]?\d{1,3}(?:,\d{3})*(?:\.\d{2}))/;
-
-    lines.forEach((ln, i) => {
-      const invM = ln.match(invRegex);
-      if (invM) {
-        let amtStr = (ln.match(amtRegex) || [])[1] || '';
-        if (!amtStr && lines[i + 1]) amtStr = (lines[i + 1].match(amtRegex) || [])[1] || '';
-        const dStr = (ln.match(/\b\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4}\b/) || [])[0] || '';
-        upsertInvoice({
-          invoice: invM[2],
-          applied: parseMoney(amtStr),
-          open: parseMoney(amtStr),
-          date: normalizeDate(dStr)
-        });
-      }
-    });
-  }
-
-  if (!state.amountReceived) {
-    const totalMatch = fullText.match(/(?:Total\s+(?:Paid|Payment|Amount))[:\s]*\$?([\d,]+\.\d{2})/i);
-    if (totalMatch) state.amountReceived = parseMoney(totalMatch[1]);
-    else state.amountReceived = state.invoices.reduce((a, b) => a + (b.applied || 0), 0);
-  }
-}
-
-// --- Sample Data ---
-$('#btnSample').onclick = () => {
-  state = {
-    payer: 'Expedition Trailers',
-    date: new Date().toISOString().slice(0, 10),
-    amountReceived: 4990.08,
-    invoices: [
-      {
-        invoice: '2085-33',
-        open: 4990.08,
-        applied: 4990.08,
-        date: new Date().toISOString().slice(0, 10)
-      },
-      {
-        invoice: '2085-34',
-        open: 10910.50,
-        applied: 0,
-        date: new Date(Date.now() + 86400000).toISOString().slice(0, 10)
-      },
-    ]
-  };
-  render();
-  toast('Sample data loaded');
-};
-
-// Initialize
-// Wait for XLSX library to load before enabling file upload
 window.addEventListener('load', () => {
-  ensureXLSX().catch(() => {
-    console.warn('XLSX library failed to preload. Falling back to dynamic import.');
-  });
-
-  let checkCount = 0;
-  const checkXLSX = setInterval(() => {
-    if (typeof XLSX !== 'undefined' || checkCount > 50) {
-      clearInterval(checkXLSX);
-      if (typeof XLSX === 'undefined') {
-        toast('Warning: Excel/CSV parsing may not work. Try refreshing the page.');
-      }
-      render();
-    }
-    checkCount++;
-  }, 100);
+  render();
+  updateStatus(statusDefault);
 });
