@@ -1,11 +1,19 @@
 // --- External Library Helpers ---
 const PDF_WORKER_SRC = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.5.136/pdf.worker.min.mjs';
+const LOCAL_XLSX_MODULE_URL = new URL('./vendor/xlsx.mjs', import.meta.url).href;
+const LOCAL_XLSX_SCRIPT_URL = new URL('./vendor/xlsx.full.min.js', import.meta.url).href;
+
 const XLSX_MODULE_URLS = [
-  'https://cdn.jsdelivr.net/npm/xlsx@0.20.3/xlsx.mjs',
-  'https://cdn.jsdelivr.net/npm/xlsx@0.20.3/dist/xlsx.mjs',
-  'https://cdn.sheetjs.com/xlsx-0.20.3/package/xlsx.mjs',
+  LOCAL_XLSX_MODULE_URL,
+  'https://cdn.jsdelivr.net/npm/xlsx@0.18.5/xlsx.mjs',
+  'https://unpkg.com/xlsx@0.18.5/xlsx.mjs',
 ];
-const XLSX_SCRIPT_URL = 'https://cdn.jsdelivr.net/npm/xlsx@0.20.3/dist/xlsx.full.min.js';
+
+const XLSX_SCRIPT_URLS = [
+  LOCAL_XLSX_SCRIPT_URL,
+  'https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js',
+  'https://unpkg.com/xlsx@0.18.5/dist/xlsx.full.min.js',
+];
 
 let xlsxPromise;
 async function ensureXLSX() {
@@ -33,35 +41,65 @@ async function ensureXLSX() {
   return xlsxPromise;
 }
 
-function loadXLSXViaScript() {
+async function loadXLSXViaScript() {
   if (typeof document === 'undefined') {
     return Promise.reject(new Error('Cannot load XLSX script outside the browser environment.'));
   }
 
+  if (typeof XLSX !== 'undefined') return XLSX;
+
+  let lastError;
+  for (const url of XLSX_SCRIPT_URLS) {
+    if (!url) continue;
+    try {
+      const lib = await injectScript(url);
+      if (lib) return lib;
+    } catch (err) {
+      lastError = err;
+      console.warn(`Failed to load XLSX script ${url}`, err);
+    }
+  }
+
+  throw lastError || new Error('Unable to load any XLSX script source.');
+}
+
+function injectScript(url) {
   return new Promise((resolve, reject) => {
     if (typeof XLSX !== 'undefined') {
       resolve(XLSX);
       return;
     }
 
-    const existing = document.querySelector(`script[src="${XLSX_SCRIPT_URL}"]`);
-    if (existing) {
-      existing.addEventListener('load', () => {
+    const scripts = Array.from(document.getElementsByTagName('script'));
+    const existing = scripts.find(s => s.src === url || s.getAttribute('data-xlsx-src') === url);
+
+    const attachHandlers = (el) => {
+      const onLoad = () => {
+        el.setAttribute('data-xlsx-loaded', 'true');
         if (typeof XLSX !== 'undefined') resolve(XLSX);
         else reject(new Error('XLSX global not found after script load.'));
-      }, { once: true });
-      existing.addEventListener('error', () => reject(new Error(`Failed to load XLSX script ${XLSX_SCRIPT_URL}`)), { once: true });
+      };
+      const onError = () => reject(new Error(`Failed to load XLSX script ${url}`));
+      el.addEventListener('load', onLoad, { once: true });
+      el.addEventListener('error', onError, { once: true });
+    };
+
+    if (existing) {
+      if (existing.getAttribute('data-xlsx-loaded') === 'true' || existing.readyState === 'complete') {
+        if (typeof XLSX !== 'undefined') {
+          resolve(XLSX);
+          return;
+        }
+      }
+      attachHandlers(existing);
       return;
     }
 
     const script = document.createElement('script');
-    script.src = XLSX_SCRIPT_URL;
+    script.src = url;
     script.async = true;
-    script.onload = () => {
-      if (typeof XLSX !== 'undefined') resolve(XLSX);
-      else reject(new Error('XLSX global not found after script load.'));
-    };
-    script.onerror = () => reject(new Error(`Failed to load XLSX script ${XLSX_SCRIPT_URL}`));
+    script.setAttribute('data-xlsx-src', url);
+    attachHandlers(script);
     document.head.appendChild(script);
   });
 }
