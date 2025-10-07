@@ -3,14 +3,12 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Remittance Reader – PDF/XLSX (Client‑side)</title>
+  <title>Remittance Reader – AI Capture (Client‑side)</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="styles.css">
   
-  <!-- Libraries: SheetJS (bundled locally for offline reliability) -->
-  <script src="vendor/xlsx.full.min.js"></script>
 </head>
 <body>
   <div class="app">
@@ -40,19 +38,19 @@
               </svg>
               Autofill from file
             </button>
-            <p class="hint">or drag and drop here<br>Supported formats: PDF, PNG, JPEG</p>
-            <input id="file" type="file" accept=".pdf,.xlsx,.xls,.csv,image/*" />
+            <p class="hint">or drag and drop here<br>Supported formats: PDF, PNG, JPEG, TXT, EML</p>
+            <input id="file" type="file" accept=".pdf,.png,.jpg,.jpeg,.txt,.eml,.msg,image/*" />
           </div>
         </div>
         
         <div class="mini">
           <div class="box">
-            <label>Parsing mode</label>
+            <label>Document type hint</label>
             <select id="mode">
               <option value="auto" selected>Auto‑detect</option>
-              <option value="pdf">PDF (text extract)</option>
-              <option value="xlsx">Spreadsheet</option>
-              <option value="csv">CSV</option>
+              <option value="invoice">Customer invoice</option>
+              <option value="bill">Vendor bill</option>
+              <option value="receipt">Receipt</option>
             </select>
           </div>
           <div class="box">
@@ -97,7 +95,6 @@
         </h1>
         <div class="toolbar">
           <button class="btn" id="btnExportCSV">Export CSV</button>
-          <button class="btn" id="btnExportXLSX">Export XLSX</button>
           <button class="btn primary" id="btnPrint">Print</button>
         </div>
       </header>
