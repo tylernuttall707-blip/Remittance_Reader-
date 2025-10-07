@@ -383,7 +383,24 @@ tbody input[type="checkbox"]{
 .invoice-cell{
   font-weight:600;
   color:var(--ink);
+  display:flex;
+  flex-direction:column;
+  gap:4px;
 }
+
+.invoice-number{font-weight:600;}
+
+.invoice-meta{
+  font-size:12px;
+  color:var(--muted);
+  display:flex;
+  flex-direction:column;
+  gap:2px;
+}
+
+.invoice-desc{word-break:break-word;}
+
+.invoice-discount{color:var(--good);font-weight:500;}
 
 .invoice-date{
   color:var(--muted);

@@ -114,6 +114,14 @@ const fmtMoney = (n, cur = ($('#currency').value || 'USD')) => {
 
 const parseMoney = (s) => Number(String(s || '').replace(/[^0-9.-]/g, '') || 0);
 
+const escapeHTML = (str) =>
+  String(str ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+
 const toast = (msg) => {
   const t = $('#toast');
   t.textContent = msg;
@@ -135,15 +143,28 @@ function render() {
   let appliedSum = 0;
   state.invoices.forEach((row, idx) => {
     appliedSum += Number(row.applied || 0);
+    const originalAmount = row.original ?? row.open ?? row.applied ?? 0;
+    const openAmount = row.open ?? Math.max(0, originalAmount - (row.applied ?? 0));
+    const metaParts = [];
+    if (row.description) metaParts.push(`<div class="invoice-desc">${escapeHTML(row.description)}</div>`);
+    if (typeof row.discount === 'number' && row.discount) {
+      metaParts.push(`<div class="invoice-discount">Discount: ${fmtMoney(row.discount)}</div>`);
+    }
+
     const tr = document.createElement('tr');
     tr.innerHTML = `
       <td><input type="checkbox" ${row.applied > 0 ? 'checked' : ''} data-idx="${idx}" class="chk"/></td>
       <td>
-        <div class="invoice-cell">${row.invoice || ''}</div>
+        <div class="invoice-cell">
+          <div class="invoice-number">${escapeHTML(row.invoice || '')}</div>
+          ${metaParts.length ? `<div class="invoice-meta">${metaParts.join('')}</div>` : ''}
+        </div>
       </td>
-      <td><div class="invoice-date">${row.date || ''}</div></td>
-      <td>${fmtMoney(row.open || 0)}</td>
-      <td>${fmtMoney(row.open || 0)}</td>
+      <td>
+        <div class="invoice-date">${escapeHTML(row.date || '')}</div>
+      </td>
+      <td>${fmtMoney(originalAmount)}</td>
+      <td>${fmtMoney(openAmount)}</td>
       <td>
         <input data-idx="${idx}" class="amt amount-input" value="${row.applied ? fmtMoney(row.applied) : ''}"/>
       </td>`;
@@ -163,12 +184,17 @@ function upsertInvoice(partial) {
   if (found) {
     Object.assign(found, partial);
   } else {
-    state.invoices.push({
+    const newRow = {
       invoice: id,
-      open: partial.open || partial.applied || 0,
-      applied: partial.applied || 0,
+      open: partial.open ?? partial.applied ?? 0,
+      applied: partial.applied ?? 0,
       date: partial.date || ''
-    });
+    };
+    if ('original' in partial) newRow.original = partial.original ?? newRow.open ?? newRow.applied;
+    else newRow.original = newRow.open ?? newRow.applied;
+    if ('discount' in partial) newRow.discount = partial.discount;
+    if (partial.description) newRow.description = partial.description;
+    state.invoices.push(newRow);
   }
 }
 
@@ -211,6 +237,9 @@ async function exportData(type = 'csv') {
       Invoice: r.invoice,
       AmountApplied: r.applied,
       OpenBalance: r.open,
+      OriginalAmount: r.original ?? r.open ?? r.applied,
+      Discount: r.discount ?? 0,
+      Description: r.description || '',
     }));
     const ws = xlsx.utils.json_to_sheet(rows);
     const wb = xlsx.utils.book_new();
@@ -315,6 +344,8 @@ async function parseSheet(file) {
       openIdx: find('open|balance|bal'),
       dateIdx: find('date|payment date|remittance date|deposit'),
       payerIdx: find('payer|from|customer|client|company|remitter|supplier'),
+      discountIdx: find('discount|disc'),
+      descriptionIdx: find('description|memo|detail'),
     };
   };
 
@@ -329,13 +360,23 @@ async function parseSheet(file) {
     const inv = idxs.invoiceIdx > -1 ? r[headers[idxs.invoiceIdx]] : (r.Invoice || r.INVOICE || r.Inv || r['Invoice #'] || r['Doc #']);
     const amt = idxs.amountIdx > -1 ? r[headers[idxs.amountIdx]] : (r.Amount || r.Paid || r['Amount Paid']);
     const open = idxs.openIdx > -1 ? r[headers[idxs.openIdx]] : (r.Open || r['Open Balance'] || 0);
+    const disc = idxs.discountIdx > -1 ? r[headers[idxs.discountIdx]] : (r.Discount || r['Discount Taken'] || 0);
+    const desc = idxs.descriptionIdx > -1 ? r[headers[idxs.descriptionIdx]] : (r.Description || '');
     const d = idxs.dateIdx > -1 ? r[headers[idxs.dateIdx]] : (r.Date || '');
 
     if (inv && (amt || open)) {
+      const appliedVal = parseMoney(amt);
+      const openVal = parseMoney(open) || appliedVal;
+      const discountVal = parseMoney(disc);
+      const originalVal = Math.max(openVal, appliedVal);
+      const descText = String(desc || '').trim();
       upsertInvoice({
         invoice: String(inv).trim(),
-        applied: parseMoney(amt),
-        open: parseMoney(open) || parseMoney(amt),
+        applied: appliedVal,
+        open: openVal,
+        original: originalVal,
+        discount: discountVal || undefined,
+        description: descText || undefined,
         date: normalizeDate(d)
       });
     }
@@ -367,6 +408,92 @@ function normalizeDate(v) {
   return '';
 }
 
+function parseMeyerRemittance(fullText) {
+  if (!/meyer distributing/i.test(fullText)) return false;
+
+  if (!state.payer) state.payer = 'Meyer Distributing';
+
+  const paymentDateMatch = fullText.match(/Payment Date\(s\)\s+(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})/i);
+  if (paymentDateMatch) {
+    state.date = state.date || normalizeDate(paymentDateMatch[1]);
+  }
+
+  const sectionSplit = fullText.split(/Document Number\s+Date\s+Description\s+Amount\s+Discount\s+Paid Amount/i);
+  let tableSection = sectionSplit[1];
+  if (!tableSection) {
+    tableSection = fullText.split(/Document Number/i)[1];
+  }
+  if (!tableSection) return false;
+
+  const lines = tableSection
+    .split(/\n+/)
+    .map(s => s.trim())
+    .filter(Boolean);
+
+  let added = 0;
+  for (let i = 0; i < lines.length; i++) {
+    let line = lines[i];
+    if (!line || /^total/i.test(line)) continue;
+    if (!/\b\d{5,}\b/.test(line)) continue;
+
+    let chunk = line;
+    let j = i;
+    while (((chunk.match(/\$?[-+]?\d{1,3}(?:,\d{3})*(?:\.\d{2})/g) || []).length < 3) && j + 1 < lines.length) {
+      const nextLine = lines[j + 1];
+      if (/^total/i.test(nextLine)) break;
+      chunk += ' ' + nextLine;
+      j++;
+    }
+
+    const amountMatches = chunk.match(/\$?[-+]?\d{1,3}(?:,\d{3})*(?:\.\d{2})/g);
+    if (!amountMatches || amountMatches.length < 3) continue;
+
+    const [amountStr, discountStr, paidStr] = amountMatches.slice(-3);
+    const docMatch = chunk.match(/\b(\d{5,})\b/);
+    if (!docMatch) continue;
+
+    const dateMatch = chunk.match(/\b\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4}\b/);
+
+    let descText = chunk;
+    descText = descText.replace(docMatch[0], ' ');
+    if (dateMatch) descText = descText.replace(dateMatch[0], ' ');
+    amountMatches.slice(-3).forEach(token => {
+      descText = descText.replace(token, ' ');
+    });
+    descText = descText.replace(/\s+/g, ' ').trim();
+
+    const original = parseMoney(amountStr);
+    const discount = parseMoney(discountStr);
+    const paid = parseMoney(paidStr);
+    const open = paid > 0 ? paid : Math.max(0, original - discount);
+
+    const payload = {
+      invoice: docMatch[1],
+      original,
+      discount,
+      applied: paid,
+      open,
+      date: normalizeDate(dateMatch?.[0] || '')
+    };
+    if (descText) payload.description = descText;
+
+    upsertInvoice(payload);
+    added++;
+    i = j;
+  }
+
+  if (added) {
+    if (!state.amountReceived) {
+      const totalPaidMatch = fullText.match(/Total Payment Amount[:\s]*\$?([\d,]+\.\d{2})/i);
+      if (totalPaidMatch) state.amountReceived = parseMoney(totalPaidMatch[1]);
+      else state.amountReceived = state.invoices.reduce((sum, row) => sum + Number(row.applied || 0), 0);
+    }
+    return true;
+  }
+
+  return false;
+}
+
 // --- PDF Parsing ---
 async function parsePDF(file) {
   const pdfjs = await ensurePDF();
@@ -382,33 +509,37 @@ async function parsePDF(file) {
     fullText += '\n' + text;
   }
 
-  // Extract payer
-  const payerMatch = fullText.match(/(?:From|Payer|Remitter|Customer)[:\-\s]*([A-Za-z0-9 &.,'\-]+)/i);
-  if (payerMatch) state.payer = state.payer || payerMatch[1].trim();
+  const handled = parseMeyerRemittance(fullText);
 
-  // Extract date
-  const dateMatch = fullText.match(/(?:Date|Payment Date|Remittance Date)[:\s]*([A-Za-z]{3,9}\s+\d{1,2},\s*\d{4}|\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4}|\d{4}[\-\/]\d{1,2}[\-\/]\d{1,2})/i);
-  if (dateMatch) state.date = state.date || normalizeDate(dateMatch[1]);
+  if (!handled) {
+    // Extract payer
+    const payerMatch = fullText.match(/(?:From|Payer|Remitter|Customer)[:\-\s]*([A-Za-z0-9 &.,'\-]+)/i);
+    if (payerMatch) state.payer = state.payer || payerMatch[1].trim();
 
-  // Extract invoice lines
-  const lines = fullText.split(/\n+/).map(s => s.trim()).filter(Boolean);
-  const invRegex = /(invoice|inv|bill)[#:\s-]*([A-Za-z0-9_-]{2,})/i;
-  const amtRegex = /(\$?[-+]?\d{1,3}(?:,\d{3})*(?:\.\d{2}))/;
+    // Extract date
+    const dateMatch = fullText.match(/(?:Date|Payment Date|Remittance Date)[:\s]*([A-Za-z]{3,9}\s+\d{1,2},\s*\d{4}|\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4}|\d{4}[\-\/]\d{1,2}[\-\/]\d{1,2})/i);
+    if (dateMatch) state.date = state.date || normalizeDate(dateMatch[1]);
 
-  lines.forEach((ln, i) => {
-    const invM = ln.match(invRegex);
-    if (invM) {
-      let amtStr = (ln.match(amtRegex) || [])[1] || '';
-      if (!amtStr && lines[i + 1]) amtStr = (lines[i + 1].match(amtRegex) || [])[1] || '';
-      const dStr = (ln.match(/\b\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4}\b/) || [])[0] || '';
-      upsertInvoice({
-        invoice: invM[2],
-        applied: parseMoney(amtStr),
-        open: parseMoney(amtStr),
-        date: normalizeDate(dStr)
-      });
-    }
-  });
+    // Extract invoice lines
+    const lines = fullText.split(/\n+/).map(s => s.trim()).filter(Boolean);
+    const invRegex = /(invoice|inv|bill)[#:\s-]*([A-Za-z0-9_-]{2,})/i;
+    const amtRegex = /(\$?[-+]?\d{1,3}(?:,\d{3})*(?:\.\d{2}))/;
+
+    lines.forEach((ln, i) => {
+      const invM = ln.match(invRegex);
+      if (invM) {
+        let amtStr = (ln.match(amtRegex) || [])[1] || '';
+        if (!amtStr && lines[i + 1]) amtStr = (lines[i + 1].match(amtRegex) || [])[1] || '';
+        const dStr = (ln.match(/\b\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4}\b/) || [])[0] || '';
+        upsertInvoice({
+          invoice: invM[2],
+          applied: parseMoney(amtStr),
+          open: parseMoney(amtStr),
+          date: normalizeDate(dStr)
+        });
+      }
+    });
+  }
 
   if (!state.amountReceived) {
     const totalMatch = fullText.match(/(?:Total\s+(?:Paid|Payment|Amount))[:\s]*\$?([\d,]+\.\d{2})/i);
