@@ -1,7 +1,57 @@
-// --- PDF.js Configuration ---
-// Configure PDF.js worker (must be done before importing)
-if (typeof pdfjsLib !== 'undefined') {
-  pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.5.136/pdf.worker.min.mjs';
+// --- External Library Helpers ---
+const PDF_WORKER_SRC = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.5.136/pdf.worker.min.mjs';
+const XLSX_MODULE_URL = 'https://cdn.jsdelivr.net/npm/xlsx@0.20.3/+esm';
+
+let xlsxPromise;
+async function ensureXLSX() {
+  if (typeof XLSX !== 'undefined') return XLSX;
+  if (!xlsxPromise) {
+    xlsxPromise = import(XLSX_MODULE_URL)
+      .then(mod => {
+        const lib = mod?.default || mod;
+        if (typeof window !== 'undefined' && !window.XLSX) window.XLSX = lib;
+        return lib;
+      })
+      .catch(err => {
+        console.error('Failed to load XLSX library', err);
+        throw err;
+      });
+  }
+  return xlsxPromise;
+}
+
+let pdfjsPromise;
+async function ensurePDF() {
+  if (typeof pdfjsLib !== 'undefined') {
+    if (pdfjsLib.GlobalWorkerOptions?.workerSrc !== PDF_WORKER_SRC) {
+      pdfjsLib.GlobalWorkerOptions.workerSrc = PDF_WORKER_SRC;
+    }
+    return pdfjsLib;
+  }
+
+  if (!pdfjsPromise) {
+    pdfjsPromise = import('https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.5.136/pdf.min.mjs')
+      .then(mod => {
+        const lib = mod?.default || mod;
+        const workerOptions = lib.GlobalWorkerOptions || mod.GlobalWorkerOptions;
+        if (workerOptions) {
+          workerOptions.workerSrc = PDF_WORKER_SRC;
+          if (!lib.GlobalWorkerOptions) lib.GlobalWorkerOptions = workerOptions;
+        }
+        if (typeof window !== 'undefined' && !window.pdfjsLib) window.pdfjsLib = lib;
+        return lib;
+      })
+      .catch(err => {
+        console.error('Failed to load PDF.js library', err);
+        throw err;
+      });
+  }
+
+  const lib = await pdfjsPromise;
+  if (lib.GlobalWorkerOptions?.workerSrc !== PDF_WORKER_SRC) {
+    lib.GlobalWorkerOptions.workerSrc = PDF_WORKER_SRC;
+  }
+  return lib;
 }
 
 // --- Helpers ---
@@ -106,20 +156,26 @@ rowsEl.addEventListener('change', (e) => {
 });
 
 // Export
-function exportData(type = 'csv') {
-  const rows = state.invoices.map(r => ({
-    Payer: state.payer,
-    PaymentDate: state.date,
-    Invoice: r.invoice,
-    AmountApplied: r.applied,
-    OpenBalance: r.open,
-  }));
-  const ws = XLSX.utils.json_to_sheet(rows);
-  const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, ws, 'Remittance');
-  if (type === 'csv') XLSX.writeFile(wb, 'remittance.csv', { bookType: 'csv' });
-  else XLSX.writeFile(wb, 'remittance.xlsx', { bookType: 'xlsx' });
-  toast(`Exported as ${type.toUpperCase()}`);
+async function exportData(type = 'csv') {
+  try {
+    const xlsx = await ensureXLSX();
+    const rows = state.invoices.map(r => ({
+      Payer: state.payer,
+      PaymentDate: state.date,
+      Invoice: r.invoice,
+      AmountApplied: r.applied,
+      OpenBalance: r.open,
+    }));
+    const ws = xlsx.utils.json_to_sheet(rows);
+    const wb = xlsx.utils.book_new();
+    xlsx.utils.book_append_sheet(wb, ws, 'Remittance');
+    if (type === 'csv') xlsx.writeFile(wb, 'remittance.csv', { bookType: 'csv' });
+    else xlsx.writeFile(wb, 'remittance.xlsx', { bookType: 'xlsx' });
+    toast(`Exported as ${type.toUpperCase()}`);
+  } catch (err) {
+    console.error('Export failed', err);
+    toast('Export failed. Try refreshing the page.');
+  }
 }
 
 $('#btnExportCSV').onclick = () => exportData('csv');
@@ -197,15 +253,12 @@ async function handleFile(f) {
 
 // --- Spreadsheet Parsing ---
 async function parseSheet(file) {
-  // Ensure XLSX library is loaded
-  if (typeof XLSX === 'undefined') {
-    throw new Error('XLSX library not loaded. Please refresh the page.');
-  }
-  
+  const xlsx = await ensureXLSX();
+
   const data = await file.arrayBuffer();
-  const wb = XLSX.read(data, { type: 'array' });
+  const wb = xlsx.read(data, { type: 'array' });
   const ws = wb.Sheets[wb.SheetNames[0]];
-  const rows = XLSX.utils.sheet_to_json(ws, { defval: '', raw: true });
+  const rows = xlsx.utils.sheet_to_json(ws, { defval: '', raw: true });
 
   const mapHeader = (keys, ...alts) => {
     const joined = keys.map(k => k.toString().toLowerCase());
@@ -270,13 +323,10 @@ function normalizeDate(v) {
 
 // --- PDF Parsing ---
 async function parsePDF(file) {
-  const mod = await import('https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.5.136/pdf.min.mjs');
-  
-  // Configure worker
-  mod.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.5.136/pdf.worker.min.mjs';
-  
+  const pdfjs = await ensurePDF();
+
   const data = new Uint8Array(await file.arrayBuffer());
-  const pdf = await mod.getDocument({ data }).promise;
+  const pdf = await pdfjs.getDocument({ data }).promise;
   let fullText = '';
 
   for (let p = 1; p <= pdf.numPages; p++) {
@@ -349,6 +399,10 @@ $('#btnSample').onclick = () => {
 // Initialize
 // Wait for XLSX library to load before enabling file upload
 window.addEventListener('load', () => {
+  ensureXLSX().catch(() => {
+    console.warn('XLSX library failed to preload. Falling back to dynamic import.');
+  });
+
   let checkCount = 0;
   const checkXLSX = setInterval(() => {
     if (typeof XLSX !== 'undefined' || checkCount > 50) {
