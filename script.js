@@ -1,3 +1,9 @@
+// --- PDF.js Configuration ---
+// Configure PDF.js worker (must be done before importing)
+if (typeof pdfjsLib !== 'undefined') {
+  pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.5.136/pdf.worker.min.mjs';
+}
+
 // --- Helpers ---
 const $ = (q) => document.querySelector(q);
 const rowsEl = $('#rows');
@@ -191,6 +197,11 @@ async function handleFile(f) {
 
 // --- Spreadsheet Parsing ---
 async function parseSheet(file) {
+  // Ensure XLSX library is loaded
+  if (typeof XLSX === 'undefined') {
+    throw new Error('XLSX library not loaded. Please refresh the page.');
+  }
+  
   const data = await file.arrayBuffer();
   const wb = XLSX.read(data, { type: 'array' });
   const ws = wb.Sheets[wb.SheetNames[0]];
@@ -260,6 +271,10 @@ function normalizeDate(v) {
 // --- PDF Parsing ---
 async function parsePDF(file) {
   const mod = await import('https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.5.136/pdf.min.mjs');
+  
+  // Configure worker
+  mod.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.5.136/pdf.worker.min.mjs';
+  
   const data = new Uint8Array(await file.arrayBuffer());
   const pdf = await mod.getDocument({ data }).promise;
   let fullText = '';
@@ -332,4 +347,17 @@ $('#btnSample').onclick = () => {
 };
 
 // Initialize
-render();
+// Wait for XLSX library to load before enabling file upload
+window.addEventListener('load', () => {
+  let checkCount = 0;
+  const checkXLSX = setInterval(() => {
+    if (typeof XLSX !== 'undefined' || checkCount > 50) {
+      clearInterval(checkXLSX);
+      if (typeof XLSX === 'undefined') {
+        toast('Warning: Excel/CSV parsing may not work. Try refreshing the page.');
+      }
+      render();
+    }
+    checkCount++;
+  }, 100);
+});
