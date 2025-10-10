@@ -1,35 +1,28 @@
-// PDF.js and library configuration
+// PDF.js configuration - Load as module
 const PDF_WORKER_SRC = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.5.136/pdf.worker.min.mjs';
 
-// Ensure PDF.js is loaded
-let pdfjsPromise;
-async function ensurePDF() {
-  if (typeof pdfjsLib !== 'undefined') {
-    if (pdfjsLib.GlobalWorkerOptions?.workerSrc !== PDF_WORKER_SRC) {
+// Global variable to hold PDF.js library
+let pdfjsLib = null;
+
+// Load PDF.js library
+async function initPDFJS() {
+  if (pdfjsLib) return pdfjsLib;
+  
+  try {
+    const pdfjs = await import('https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.5.136/pdf.min.mjs');
+    pdfjsLib = pdfjs;
+    
+    // Set worker source
+    if (pdfjsLib.GlobalWorkerOptions) {
       pdfjsLib.GlobalWorkerOptions.workerSrc = PDF_WORKER_SRC;
     }
+    
+    console.log('PDF.js loaded successfully');
     return pdfjsLib;
+  } catch (error) {
+    console.error('Failed to load PDF.js:', error);
+    throw new Error('Failed to load PDF.js library');
   }
-
-  if (!pdfjsPromise) {
-    pdfjsPromise = import('https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.5.136/pdf.min.mjs')
-      .then(mod => {
-        const lib = mod?.default || mod;
-        const workerOptions = lib.GlobalWorkerOptions || mod.GlobalWorkerOptions;
-        if (workerOptions) {
-          workerOptions.workerSrc = PDF_WORKER_SRC;
-          if (!lib.GlobalWorkerOptions) lib.GlobalWorkerOptions = workerOptions;
-        }
-        if (typeof window !== 'undefined' && !window.pdfjsLib) window.pdfjsLib = lib;
-        return lib;
-      });
-  }
-
-  const lib = await pdfjsPromise;
-  if (lib.GlobalWorkerOptions?.workerSrc !== PDF_WORKER_SRC) {
-    lib.GlobalWorkerOptions.workerSrc = PDF_WORKER_SRC;
-  }
-  return lib;
 }
 
 // Helper functions
@@ -189,7 +182,7 @@ function updateStatus(msg) {
 }
 
 // ============================================================================
-// NEW REMITTANCE PARSER CLASS
+// REMITTANCE PARSER CLASS
 // ============================================================================
 
 class RemittanceParser {
@@ -199,12 +192,12 @@ class RemittanceParser {
   }
 
   async init() {
-    if (typeof pdfjsLib !== 'undefined') {
-      this.pdfjsLib = pdfjsLib;
-      if (!this.pdfjsLib.GlobalWorkerOptions?.workerSrc) {
-        this.pdfjsLib.GlobalWorkerOptions.workerSrc = PDF_WORKER_SRC;
-      }
+    // Initialize PDF.js
+    if (!this.pdfjsLib) {
+      this.pdfjsLib = await initPDFJS();
     }
+    
+    // Check for XLSX
     if (typeof XLSX !== 'undefined') {
       this.XLSX = XLSX;
     }
@@ -832,12 +825,12 @@ fileInput.onchange = (e) => {
   if (f) handleFile(f);
 };
 
-// Main file handler - UPDATED TO USE NEW PARSER
+// Main file handler
 async function handleFile(f) {
   try {
     updateStatus(`Capturing ${f.name}…`);
     
-    // Use new parser
+    // Use parser
     const parser = new RemittanceParser();
     const result = await parser.parseFile(f);
     
