@@ -8,13 +8,6 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="styles.css">
-  
-  <!-- SheetJS library for Excel/CSV parsing -->
-  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.20.3/dist/xlsx.full.min.js"></script>
-  
-  <!-- Tesseract.js for OCR (reading text from images/scanned PDFs) -->
-  <script src='https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js'></script>
-  
 </head>
 <body>
   <div class="app">
@@ -44,8 +37,8 @@
               </svg>
               Autofill from file
             </button>
-            <p class="hint">or drag and drop here<br>Supported formats: PDF, PNG, JPEG, TXT, EML</p>
-            <input id="file" type="file" accept=".pdf,.png,.jpg,.jpeg,.txt,.eml,.msg,image/*" />
+            <p class="hint">or drag and drop here<br>Supported formats: PDF, PNG, JPEG, TXT, EML, XLSX, CSV</p>
+            <input id="file" type="file" accept=".pdf,.png,.jpg,.jpeg,.txt,.eml,.msg,.xlsx,.xls,.csv,image/*" />
           </div>
         </div>
         
@@ -189,6 +182,32 @@
 
   <div id="toast" class="toast hidden"></div>
 
+  <!-- Load libraries before script.js -->
+  <!-- SheetJS library for Excel/CSV parsing - Load with onload handler -->
+  <script>
+    // Track library loading status
+    window.libraryStatus = {
+      xlsx: false,
+      tesseract: false
+    };
+    
+    console.log('Starting to load XLSX library...');
+  </script>
+  
+  <script 
+    src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js" 
+    onload="window.libraryStatus.xlsx = true; console.log('✅ XLSX library loaded successfully!');"
+    onerror="console.error('❌ Failed to load XLSX library from CDN'); window.libraryStatus.xlsxError = true;">
+  </script>
+  
+  <!-- Tesseract.js for OCR (reading text from images/scanned PDFs) -->
+  <script 
+    src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"
+    onload="window.libraryStatus.tesseract = true; console.log('✅ Tesseract library loaded successfully!');"
+    onerror="console.error('❌ Failed to load Tesseract library from CDN');">
+  </script>
+  
+  <!-- Main application script -->
   <script type="module" src="script.js"></script>
 </body>
 </html>
