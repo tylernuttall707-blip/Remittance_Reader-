@@ -269,12 +269,21 @@ class RemittanceParser {
     const pdf = await this.pdfjsLib.getDocument({ data }).promise;
     let fullText = '';
 
+    console.log('PDF has', pdf.numPages, 'pages');
+
     for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
       const page = await pdf.getPage(pageNum);
       const textContent = await page.getTextContent();
       const pageText = textContent.items.map(item => item.str).join(' ');
+      console.log(`Page ${pageNum} text (first 500 chars):`, pageText.substring(0, 500));
       fullText += pageText + '\n';
     }
+
+    console.log('Full extracted text (first 1000 chars):', fullText.substring(0, 1000));
+    console.log('Text contains "Turn 5":', fullText.includes('Turn 5'));
+    console.log('Text contains "turn 5" (lowercase):', fullText.toLowerCase().includes('turn 5'));
+    console.log('Text contains "Artec":', fullText.includes('Artec'));
+    console.log('Text contains "ARTEC":', fullText.includes('ARTEC'));
 
     const format = this.detectPDFFormat(fullText);
     console.log(`Detected PDF format: ${format}`);
