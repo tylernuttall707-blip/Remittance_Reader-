@@ -26,24 +26,74 @@ async function initPDFJS() {
 }
 
 // Helper function to wait for XLSX library
-async function waitForXLSX(maxWaitMs = 5000) {
+async function waitForXLSX(maxWaitMs = 10000) {
+  // Check if already loaded
   if (typeof XLSX !== 'undefined') {
+    console.log('✅ XLSX already available');
     return XLSX;
   }
   
+  console.log('⏳ Waiting for XLSX library to load...');
   const startTime = Date.now();
+  let lastStatus = '';
   
   while (typeof XLSX === 'undefined' && (Date.now() - startTime) < maxWaitMs) {
     await new Promise(resolve => setTimeout(resolve, 100));
+    
+    // Check library status
+    if (window.libraryStatus) {
+      const status = window.libraryStatus.xlsx ? 'loaded' : 'loading';
+      const error = window.libraryStatus.xlsxError ? 'ERROR' : '';
+      const currentStatus = `${status} ${error}`.trim();
+      
+      if (currentStatus !== lastStatus) {
+        console.log(`XLSX status: ${currentStatus}`);
+        lastStatus = currentStatus;
+      }
+      
+      // If there was a load error, try fallback
+      if (window.libraryStatus.xlsxError) {
+        console.log('⚠️ CDN failed, trying fallback...');
+        try {
+          await loadXLSXFallback();
+        } catch (e) {
+          console.error('Fallback also failed:', e);
+        }
+      }
+    }
   }
   
   if (typeof XLSX !== 'undefined') {
-    console.log('XLSX library loaded successfully');
+    console.log('✅ XLSX library loaded successfully');
     return XLSX;
   }
   
-  console.error('XLSX library not available after waiting');
+  console.error('❌ XLSX library not available after waiting');
+  console.error('Check browser console for network errors');
   return null;
+}
+
+// Fallback: Try to load XLSX from alternative CDN
+async function loadXLSXFallback() {
+  return new Promise((resolve, reject) => {
+    if (typeof XLSX !== 'undefined') {
+      resolve(XLSX);
+      return;
+    }
+    
+    console.log('Trying fallback CDN: unpkg.com');
+    const script = document.createElement('script');
+    script.src = 'https://unpkg.com/xlsx@0.18.5/dist/xlsx.full.min.js';
+    script.onload = () => {
+      console.log('✅ Fallback XLSX loaded from unpkg');
+      resolve(XLSX);
+    };
+    script.onerror = () => {
+      console.error('❌ Fallback CDN also failed');
+      reject(new Error('All CDNs failed'));
+    };
+    document.head.appendChild(script);
+  });
 }
 
 // Helper functions
@@ -562,7 +612,23 @@ class RemittanceParser {
 
   async parseXLSX(file) {
     if (!this.XLSX) {
-      throw new Error('XLSX library not loaded. Please include SheetJS library in your HTML: <script src="https://cdn.jsdelivr.net/npm/xlsx@0.20.3/dist/xlsx.full.min.js"></script>');
+      // Provide diagnostic information
+      const diagnostics = [];
+      diagnostics.push('❌ XLSX library failed to load');
+      
+      if (window.libraryStatus) {
+        diagnostics.push(`Library status: ${JSON.stringify(window.libraryStatus)}`);
+      }
+      
+      diagnostics.push('');
+      diagnostics.push('Possible causes:');
+      diagnostics.push('1. CDN is blocked by firewall/ad blocker');
+      diagnostics.push('2. Network connection issue');
+      diagnostics.push('3. Script tag missing from HTML');
+      diagnostics.push('');
+      diagnostics.push('Solution: Check browser console (F12) for network errors');
+      
+      throw new Error(diagnostics.join('\n'));
     }
 
     const arrayBuffer = await file.arrayBuffer();
