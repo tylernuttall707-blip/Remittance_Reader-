@@ -75,14 +75,35 @@ function resetState() {
 }
 
 function render() {
-  $('#payer').value = state.payer || '';
-  if (state.date) $('#paydate').value = state.date;
-  $('#amountReceived').value = state.amountReceived ? fmtMoney(state.amountReceived) : '';
+  console.log('=== RENDER CALLED ===');
+  console.log('Current state:', state);
+  
+  const payerInput = $('#payer');
+  const paydateInput = $('#paydate');
+  const amountInput = $('#amountReceived');
+  
+  console.log('Payer input element:', payerInput);
+  console.log('Setting payer to:', state.payer);
+  
+  payerInput.value = state.payer || '';
+  
+  if (state.date) {
+    console.log('Setting date to:', state.date);
+    paydateInput.value = state.date;
+  }
+  
+  const formattedAmount = state.amountReceived ? fmtMoney(state.amountReceived) : '';
+  console.log('Setting amount to:', formattedAmount);
+  amountInput.value = formattedAmount;
+  
   $('#displayAmount').textContent = state.amountReceived ? fmtMoney(state.amountReceived) : '$0.00';
   $('#currencyDisplay').textContent = $('#currency').value || 'USD';
 
   rowsEl.innerHTML = '';
   let appliedSum = 0;
+  
+  console.log('Rendering', state.invoices.length, 'invoice rows');
+  
   state.invoices.forEach((row, idx) => {
     const appliedVal = Number(row.applied || 0);
     appliedSum += appliedVal;
@@ -112,12 +133,17 @@ function render() {
         <input data-idx="${idx}" class="amt amount-input" value="${appliedVal ? fmtMoney(appliedVal) : ''}"/>
       </td>`;
     rowsEl.appendChild(tr);
+    console.log('Added row for invoice:', row.invoice);
   });
 
   $('#appliedTotal').textContent = fmtMoney(appliedSum);
   const credit = Math.max(0, (state.amountReceived || 0) - appliedSum);
   $('#applyTotal').textContent = fmtMoney(appliedSum);
   $('#creditTotal').textContent = fmtMoney(credit);
+  
+  console.log('=== RENDER COMPLETE ===');
+  console.log('Applied total:', appliedSum);
+  console.log('Credit:', credit);
 }
 
 function upsertInvoice(partial) {
@@ -834,18 +860,31 @@ async function handleFile(f) {
     const parser = new RemittanceParser();
     const result = await parser.parseFile(f);
     
-    console.log('Parser result:', result);
+    console.log('=== PARSER RESULT ===');
+    console.log('Customer:', result.customer);
+    console.log('Vendor:', result.vendor);
+    console.log('Payment Date:', result.paymentDate);
+    console.log('Invoices count:', result.invoices.length);
+    console.log('Full result:', result);
     
     // Clear existing state
     state = initialState();
+    console.log('State cleared');
     
     // Apply payment info
     state.payer = result.customer || '';
     state.vendor = result.vendor || '';
     state.date = result.paymentDate || '';
     
+    console.log('=== STATE AFTER PAYMENT INFO ===');
+    console.log('state.payer:', state.payer);
+    console.log('state.vendor:', state.vendor);
+    console.log('state.date:', state.date);
+    
     // Process invoices
-    result.invoices.forEach(inv => {
+    result.invoices.forEach((inv, idx) => {
+      console.log(`Processing invoice ${idx + 1}:`, inv);
+      
       const invoice = {
         invoice: inv.invoice,
         date: inv.date || '',
@@ -862,8 +901,12 @@ async function handleFile(f) {
         invoice.description = inv.notes || inv.description;
       }
       
+      console.log('Calling upsertInvoice with:', invoice);
       upsertInvoice(invoice);
     });
+    
+    console.log('=== STATE AFTER INVOICES ===');
+    console.log('state.invoices:', state.invoices);
     
     // Calculate total amount received
     if (!state.amountReceived && state.invoices.length) {
@@ -873,7 +916,16 @@ async function handleFile(f) {
       );
     }
     
+    console.log('=== STATE BEFORE RENDER ===');
+    console.log('state.amountReceived:', state.amountReceived);
+    console.log('Full state:', state);
+    
     render();
+    
+    console.log('=== AFTER RENDER ===');
+    console.log('Payer input value:', $('#payer')?.value);
+    console.log('Date input value:', $('#paydate')?.value);
+    console.log('Amount input value:', $('#amountReceived')?.value);
     
     const summary = `Extracted ${result.invoices.length} invoice(s) from ${result.vendor || 'remittance'}`;
     updateStatus(summary);
