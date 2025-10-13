@@ -950,13 +950,15 @@ async function handleFile(f) {
     console.log('State cleared');
     
     // Apply payment info
-    state.payer = result.customer || '';
-    state.vendor = result.vendor || '';
+    // Note: In the parser output, "vendor" is who sent the payment (the payer)
+    // and "customer" is who received it (us). Swap them for the UI.
+    state.payer = result.vendor || '';  // The vendor is actually the payer/customer
+    state.vendor = result.customer || '';  // The customer is actually us (recipient)
     state.date = result.paymentDate || '';
     
     console.log('=== STATE AFTER PAYMENT INFO ===');
-    console.log('state.payer:', state.payer);
-    console.log('state.vendor:', state.vendor);
+    console.log('state.payer (who sent payment):', state.payer);
+    console.log('state.vendor (who received payment):', state.vendor);
     console.log('state.date:', state.date);
     
     // Process invoices
