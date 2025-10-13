@@ -25,6 +25,27 @@ async function initPDFJS() {
   }
 }
 
+// Helper function to wait for XLSX library
+async function waitForXLSX(maxWaitMs = 5000) {
+  if (typeof XLSX !== 'undefined') {
+    return XLSX;
+  }
+  
+  const startTime = Date.now();
+  
+  while (typeof XLSX === 'undefined' && (Date.now() - startTime) < maxWaitMs) {
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+  
+  if (typeof XLSX !== 'undefined') {
+    console.log('XLSX library loaded successfully');
+    return XLSX;
+  }
+  
+  console.error('XLSX library not available after waiting');
+  return null;
+}
+
 // Helper functions
 const $ = (q) => document.querySelector(q);
 const rowsEl = $('#rows');
@@ -223,9 +244,9 @@ class RemittanceParser {
       this.pdfjsLib = await initPDFJS();
     }
     
-    // Check for XLSX
-    if (typeof XLSX !== 'undefined') {
-      this.XLSX = XLSX;
+    // Wait for XLSX library to load
+    if (!this.XLSX) {
+      this.XLSX = await waitForXLSX(5000);
     }
   }
 
@@ -541,7 +562,7 @@ class RemittanceParser {
 
   async parseXLSX(file) {
     if (!this.XLSX) {
-      throw new Error('XLSX library not loaded. Please include SheetJS library.');
+      throw new Error('XLSX library not loaded. Please include SheetJS library in your HTML: <script src="https://cdn.jsdelivr.net/npm/xlsx@0.20.3/dist/xlsx.full.min.js"></script>');
     }
 
     const arrayBuffer = await file.arrayBuffer();
