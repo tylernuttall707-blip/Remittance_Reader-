@@ -280,6 +280,23 @@ class RemittanceParser {
     }
 
     console.log('Full extracted text (first 1000 chars):', fullText.substring(0, 1000));
+    
+    // Check if we got any meaningful text
+    const hasText = fullText.trim().length > 50;
+    console.log('Has text:', hasText, '(length:', fullText.trim().length, ')');
+    
+    // If no text found, this is likely an image-based PDF - use OCR
+    if (!hasText) {
+      console.log('No text found in PDF - attempting OCR...');
+      try {
+        fullText = await this.performOCR(pdf);
+        console.log('OCR completed. Extracted text (first 1000 chars):', fullText.substring(0, 1000));
+      } catch (ocrError) {
+        console.error('OCR failed:', ocrError);
+        throw new Error('This appears to be a scanned/image PDF. OCR extraction failed: ' + ocrError.message);
+      }
+    }
+
     console.log('Text contains "Turn 5":', fullText.includes('Turn 5'));
     console.log('Text contains "turn 5" (lowercase):', fullText.toLowerCase().includes('turn 5'));
     console.log('Text contains "Artec":', fullText.includes('Artec'));
@@ -298,6 +315,58 @@ class RemittanceParser {
       default:
         return this.parseGenericPDF(fullText);
     }
+  }
+
+  /**
+   * Perform OCR on PDF pages using Tesseract.js
+   */
+  async performOCR(pdf) {
+    if (typeof Tesseract === 'undefined') {
+      throw new Error('Tesseract.js library not loaded');
+    }
+
+    let fullText = '';
+    
+    // Update status to show OCR progress
+    if (typeof updateStatus === 'function') {
+      updateStatus('Scanning document with OCR...');
+    }
+
+    for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
+      console.log(`Running OCR on page ${pageNum}/${pdf.numPages}...`);
+      
+      if (typeof updateStatus === 'function') {
+        updateStatus(`OCR scanning page ${pageNum} of ${pdf.numPages}...`);
+      }
+      
+      const page = await pdf.getPage(pageNum);
+      
+      // Render page to canvas
+      const viewport = page.getViewport({ scale: 2.0 }); // Higher scale for better OCR
+      const canvas = document.createElement('canvas');
+      const context = canvas.getContext('2d');
+      canvas.width = viewport.width;
+      canvas.height = viewport.height;
+      
+      await page.render({
+        canvasContext: context,
+        viewport: viewport
+      }).promise;
+      
+      // Run OCR on canvas
+      const { data: { text } } = await Tesseract.recognize(
+        canvas,
+        'eng',
+        {
+          logger: m => console.log('OCR progress:', m)
+        }
+      );
+      
+      console.log(`Page ${pageNum} OCR result (first 300 chars):`, text.substring(0, 300));
+      fullText += text + '\n';
+    }
+
+    return fullText;
   }
 
   detectPDFFormat(text) {
