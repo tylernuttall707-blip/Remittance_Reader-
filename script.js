@@ -669,11 +669,14 @@ class RemittanceParser {
     }
 
     const colMap = {
-      invoice: this.findColumn(headers, ['invoice', 'inv', 'document', 'inv ref']),
-      date: this.findColumn(headers, ['date', 'invoice date', 'inv date']),
-      amount: this.findColumn(headers, ['amount', 'invoice amount', 'total']),
-      discount: this.findColumn(headers, ['discount', 'discount $', 'disc']),
-      paid: this.findColumn(headers, ['paid', 'paid amount', 'payment'])
+      invoice: this.findColumn(headers, ['docnum', 'invoice', 'inv', 'document', 'inv ref', 'invoice no', 'doc num']),
+      date: this.findColumn(headers, ['invoice date', 'date', 'inv date', 'document date']),
+      amount: this.findColumn(headers, ['invoice total', 'amount', 'invoice amount', 'total']),
+      discount: this.findColumn(headers, ['discount total', 'discount', 'discount $', 'disc', 'cash discount']),
+      paid: this.findColumn(headers, ['total payment', 'paid', 'paid amount', 'payment', 'net amount']),
+      customer: this.findColumn(headers, ['bp number', 'customer', 'vendor', 'payer', 'bp']),
+      paymentNum: this.findColumn(headers, ['payment/op number', 'payment number', 'payment #', 'check number']),
+      paymentDate: this.findColumn(headers, ['payment posting date', 'payment date', 'posting date'])
     };
 
     for (let i = 0; i < Math.min(headerRow, data.length); i++) {
@@ -685,6 +688,32 @@ class RemittanceParser {
       if (rowStr.includes('date') && row.length >= 2) {
         const dateVal = row[1];
         if (dateVal) result.paymentDate = this.normalizeDate(dateVal);
+      }
+    }
+
+    // Extract customer and payment info from data rows if available
+    let firstDataRow = null;
+    for (let i = headerRow + 1; i < data.length; i++) {
+      const row = data[i];
+      if (!row || row.length === 0) continue;
+      
+      const invoiceNum = row[colMap.invoice];
+      if (!invoiceNum) continue;
+      
+      firstDataRow = row;
+      break;
+    }
+
+    // Get customer name and payment info from first data row
+    if (firstDataRow) {
+      if (colMap.customer >= 0 && firstDataRow[colMap.customer]) {
+        result.customer = String(firstDataRow[colMap.customer]).trim();
+      }
+      if (colMap.paymentNum >= 0 && firstDataRow[colMap.paymentNum]) {
+        result.paymentNumber = String(firstDataRow[colMap.paymentNum]).trim();
+      }
+      if (colMap.paymentDate >= 0 && firstDataRow[colMap.paymentDate]) {
+        result.paymentDate = this.normalizeDate(firstDataRow[colMap.paymentDate]);
       }
     }
 
@@ -754,12 +783,14 @@ class RemittanceParser {
     }
 
     const colMap = {
-      invoice: this.findColumn(headers, ['invoice', 'inv', 'document']),
-      date: this.findColumn(headers, ['invoice date', 'date', 'inv date']),
-      amount: this.findColumn(headers, ['invoice amount', 'amount']),
-      discount: this.findColumn(headers, ['discount', 'cash discount']),
-      paid: this.findColumn(headers, ['payment amount', 'paid', 'paid amount']),
-      paymentDate: this.findColumn(headers, ['payment date'])
+      invoice: this.findColumn(headers, ['docnum', 'invoice', 'inv', 'document', 'doc num', 'invoice no']),
+      date: this.findColumn(headers, ['invoice date', 'date', 'inv date', 'document date']),
+      amount: this.findColumn(headers, ['invoice total', 'invoice amount', 'amount']),
+      discount: this.findColumn(headers, ['discount total', 'cash discount', 'discount']),
+      paid: this.findColumn(headers, ['total payment', 'payment amount', 'paid', 'paid amount', 'net amount']),
+      customer: this.findColumn(headers, ['bp number', 'customer', 'vendor', 'payer', 'bp']),
+      paymentNum: this.findColumn(headers, ['payment/op number', 'payment number', 'payment #', 'check number']),
+      paymentDate: this.findColumn(headers, ['payment posting date', 'payment date', 'posting date'])
     };
 
     for (let i = headerRow + 1; i < lines.length; i++) {
@@ -780,8 +811,18 @@ class RemittanceParser {
       if (colMap.paid >= 0) {
         invoice.paidAmount = this.parseMoney(cells[colMap.paid]);
       }
-      if (colMap.paymentDate >= 0 && cells[colMap.paymentDate]) {
-        result.paymentDate = this.normalizeDate(cells[colMap.paymentDate]);
+      
+      // Extract customer and payment info from first row
+      if (result.invoices.length === 0) {
+        if (colMap.customer >= 0 && cells[colMap.customer]) {
+          result.customer = String(cells[colMap.customer]).trim();
+        }
+        if (colMap.paymentNum >= 0 && cells[colMap.paymentNum]) {
+          result.paymentNumber = String(cells[colMap.paymentNum]).trim();
+        }
+        if (colMap.paymentDate >= 0 && cells[colMap.paymentDate]) {
+          result.paymentDate = this.normalizeDate(cells[colMap.paymentDate]);
+        }
       }
 
       result.invoices.push(invoice);
@@ -1037,10 +1078,35 @@ async function handleFile(f) {
     console.log('State cleared');
     
     // Apply payment info
-    // Note: In the parser output, "vendor" is who sent the payment (the payer)
-    // and "customer" is who received it (us). Swap them for the UI.
-    state.payer = result.vendor || '';  // The vendor is actually the payer/customer
-    state.vendor = result.customer || '';  // The customer is actually us (recipient)
+    // For AP (Accounts Payable) exports like SAP:
+    //   - "customer" field (BP number) = VENDOR receiving payment
+    //   - Payer = whoever ran the report (not in the file, user must fill in)
+    // For AR (Accounts Receivable) exports:
+    //   - "customer" field = CUSTOMER making payment
+    //   - Vendor = us (recipient)
+    
+    // Check if this looks like an AP report (has BP number and payment to vendor)
+    const isAccountsPayable = result.customer && !result.vendor;
+    
+    if (isAccountsPayable) {
+      // AP report: Leave payer blank (user's company), put BP in memo
+      state.payer = '';  // User needs to fill this in
+      state.vendor = result.customer;  // BP number = vendor receiving payment
+      // Add note about the vendor
+      if (result.customer) {
+        const memoEl = $('#memo');
+        if (memoEl) {
+          memoEl.value = `Payment to vendor: ${result.customer}`;
+        }
+      }
+      // Update status to inform user
+      updateStatus(`⚠️ Please enter who sent this payment (this is an AP report showing payment to ${result.customer})`);
+    } else {
+      // AR report or other: Use whichever fields are available
+      state.payer = result.customer || result.vendor || '';
+      state.vendor = result.vendor || '';
+    }
+    
     state.date = result.paymentDate || '';
     
     console.log('=== STATE AFTER PAYMENT INFO ===');
