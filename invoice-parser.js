@@ -14,18 +14,40 @@ class InvoiceParser {
    * Initialize required libraries
    */
   async init() {
-    // Initialize PDF.js if available
-    if (typeof pdfjsLib !== 'undefined') {
-      this.pdfjsLib = pdfjsLib;
-      if (!this.pdfjsLib.GlobalWorkerOptions?.workerSrc) {
-        this.pdfjsLib.GlobalWorkerOptions.workerSrc = 
-          'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.5.136/pdf.worker.min.mjs';
+    // Load PDF.js dynamically if not already loaded
+    if (!this.pdfjsLib) {
+      try {
+        const pdfjs = await import('https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.5.136/pdf.min.mjs');
+        this.pdfjsLib = pdfjs;
+        
+        // Set worker source
+        if (this.pdfjsLib.GlobalWorkerOptions) {
+          this.pdfjsLib.GlobalWorkerOptions.workerSrc = 
+            'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.5.136/pdf.worker.min.mjs';
+        }
+        
+        console.log('✅ PDF.js loaded successfully in InvoiceParser');
+      } catch (error) {
+        console.error('Failed to load PDF.js:', error);
       }
     }
 
+    // Wait for XLSX library to load (it loads via script tag)
+    if (!this.XLSX && typeof XLSX === 'undefined') {
+      console.log('⏳ Waiting for XLSX library to load...');
+      // Wait up to 5 seconds for XLSX to load
+      const startTime = Date.now();
+      while (typeof XLSX === 'undefined' && (Date.now() - startTime) < 5000) {
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
+    }
+    
     // Check for XLSX library
     if (typeof XLSX !== 'undefined') {
       this.XLSX = XLSX;
+      console.log('✅ XLSX library available');
+    } else {
+      console.warn('⚠️ XLSX library not loaded - Excel/CSV files will not work');
     }
   }
 
@@ -79,7 +101,7 @@ class InvoiceParser {
    */
   async parsePDF(file) {
     if (!this.pdfjsLib) {
-      throw new Error('PDF.js library not loaded');
+      throw new Error('PDF.js library failed to load. Please check your internet connection and try again.');
     }
 
     const arrayBuffer = await file.arrayBuffer();
