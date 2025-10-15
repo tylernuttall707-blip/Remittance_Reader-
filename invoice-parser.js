@@ -141,22 +141,24 @@ class InvoiceParser {
       comments: []
     };
 
-    // Extract supplier name - be very specific to avoid picking up footer text
+    // Extract supplier name - prioritize company header over BILL TO
     const supplierPatterns = [
-      // Pattern 1: "Sold By:" followed by company name on next line
+      // Pattern 1: Company name followed by INVOICE (Quality Plating format)
+      /([A-Z][A-Za-z\s&,.''-]+(?:Inc\.|LLC|Corp\.|Co\.|Company|Corporation))\s+INVOICE/i,
+      // Pattern 2: "Sold By:" followed by company name
       /Sold By:[\s\r\n]+([A-Z][A-Z\s&,.''-]+(?:#\d+|LLC|Inc\.|Corp\.|Co\.)?)[\s\r\n]/i,
-      // Pattern 2: "BILL TO" or "FROM" followed by company name
-      /(?:BILL TO|FROM):[\s\r\n]+([A-Z][A-Za-z\s&,.''-]+(?:LLC|Inc\.|Corp\.|Co\.)?)[\s\r\n]/i,
-      // Pattern 3: Company name at very start of document (first 200 chars only)
-      /^(.{0,200}?)([A-Z][A-Z\s&-]+(?:LLC|INC|CORP|#\d+))[\s\r\n]/m
+      // Pattern 3: Company name at very top (first 300 chars)
+      /^(.{0,300}?)([A-Z][A-Za-z\s&,.''-]+(?:Inc\.|LLC|Corp\.|Co\.|Company))[\s\r\n]/m,
+      // Pattern 4: "FROM:" followed by company name
+      /FROM:[\s\r\n]+([A-Z][A-Za-z\s&,.''-]+(?:LLC|Inc\.|Corp\.|Co\.)?)[\s\r\n]/i
     ];
 
     for (const pattern of supplierPatterns) {
       const match = text.match(pattern);
       if (match) {
         const supplier = (match[2] || match[1]).trim();
-        // Skip if it's just "INVOICE" or contains common footer text
-        if (!/^I\s*N\s*V\s*O\s*I\s*C\s*E/i.test(supplier) && 
+        // Skip BILL TO, SHIP TO, SOLD TO sections and footer text
+        if (!/^(BILL TO|SHIP TO|SOLD TO|Artec)/i.test(supplier) && 
             !/(government|authorized|regulations|controlled)/i.test(supplier)) {
           result.supplier = supplier;
           break;
@@ -166,15 +168,18 @@ class InvoiceParser {
 
     // Extract invoice number/ID
     const invoiceIdPatterns = [
-      /INVOICE\s*(?:NUMBER|#|NO\.?|ID)?:?\s*([A-Z0-9-]+)/i,
-      /Invoice\s*#?\s*([A-Z0-9-]+)/i,
-      /INV(?:OICE)?[-\s#]*([A-Z0-9-]+)/i,
-      /(?:^|\s)([A-Z]{2,5}[-]?\d{4,})/m
+      /INVOICE\s*#:?\s*([A-Z0-9-]+)/i,
+      /Invoice\s*#:?\s*([A-Z0-9-]+)/i,
+      /INVOICE\s*(?:NUMBER|NO\.?|ID)?:?\s*([A-Z0-9-]+)/i,
+      /Invoice\s*Number:?\s*([A-Z0-9-]+)/i,
+      /INV(?:OICE)?[-\s#]*:?\s*([A-Z0-9-]+)/i,
+      /(?:No|#):?\s*\d+\s+([A-Z]{2,5}[-]?\d{4,})/,  // "No: 16 IV-612155" format
+      /(?:^|\s)([A-Z]{2,5}[-]?\d{4,})(?=\s|$)/m  // Standalone like "IV-612155"
     ];
 
     for (const pattern of invoiceIdPatterns) {
       const match = text.match(pattern);
-      if (match) {
+      if (match && match[1] && match[1].length >= 3) {  // At least 3 chars
         result.invoiceId = match[1].trim();
         break;
       }
@@ -197,19 +202,27 @@ class InvoiceParser {
       }
     }
 
-    // Extract due date
+    // Extract due date - skip "Date of Release" field
     const duePatterns = [
       /Due:?\s*(\d{1,2}[A-Za-z]{3}\d{2})/i,  // Due:01Nov25
       /DUE\s+DATE:?\s*(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})/i,
       /PLEASE PAY.*?(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})/i,
-      /Due:?\s*(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})/i
+      /Payment Due:?\s*(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})/i
     ];
 
     for (const pattern of duePatterns) {
       const match = text.match(pattern);
       if (match) {
-        result.dueDate = this.normalizeDate(match[1]);
-        break;
+        const dateStr = match[1];
+        // Skip if it's the "Date of Release" (typically an old date from 2009 or similar)
+        const normalized = this.normalizeDate(dateStr);
+        const year = normalized ? parseInt(normalized.split('-')[0]) : 0;
+        
+        // Only use if year is reasonable (2020+)
+        if (year >= 2020) {
+          result.dueDate = normalized;
+          break;
+        }
       }
     }
 
@@ -266,7 +279,6 @@ class InvoiceParser {
     const lineItems = [];
 
     // Pattern 1: Affiliated Metals format (MATERIAL qty PCS @ price EA total)
-    // Be more flexible with whitespace
     const pattern1 = /MATERIAL\s+(\d+(?:\.\d+)?)\s+PCS\s+@\s+([\d,]+\.?\d*)\s+EA\s+([\d,]+\.?\d*)/gi;
     let match;
     
@@ -296,12 +308,47 @@ class InvoiceParser {
 
     console.log(`Pattern 1 (Affiliated Metals) found ${lineItems.length} line items`);
 
-    // Pattern 2: Quantity, Description, Unit Price, Extended Price
+    // Pattern 2: Quality Plating table format (qty qty partno desc unitprice extprice)
     if (lineItems.length === 0) {
-      const pattern2 = /(\d+(?:\.\d+)?)\s+([A-Z0-9][^\$\n]{10,80}?)\s+\$?([\d,]+\.\d{2})\s+\$?([\d,]+\.\d{2})/gi;
+      // Match: 60 60 BB1051 Tone Rings 2.2000 /ea. $132.00
+      const pattern2 = /(\d+)\s+\d+\s+([A-Z0-9]+)\s+([A-Za-z\s]+?)\s+([\d,]+\.?\d+)\s*\/ea\.\s+\$?([\d,]+\.?\d+)/gi;
       
       while ((match = pattern2.exec(text)) !== null) {
+        const quantity = parseFloat(match[1]);
+        const partNumber = match[2];
+        const description = `${partNumber} ${match[3].trim()}`;
+        const unitPrice = this.parseMoney(match[4]);
+        const extPrice = this.parseMoney(match[5]);
+        
+        console.log('Quality Plating line item found:', {
+          quantity,
+          description,
+          unitPrice,
+          extPrice
+        });
+        
+        lineItems.push({
+          quantity: quantity,
+          description: description,
+          unitPrice: unitPrice,
+          amount: extPrice
+        });
+      }
+      
+      console.log(`Pattern 2 (Quality Plating) found ${lineItems.length} line items`);
+    }
+
+    // Pattern 3: Standard quantity, description, unit price, extended price
+    if (lineItems.length === 0) {
+      const pattern3 = /(\d+(?:\.\d+)?)\s+([A-Z0-9][^\$\n]{10,80}?)\s+\$?([\d,]+\.\d{2})\s+\$?([\d,]+\.\d{2})/gi;
+      
+      while ((match = pattern3.exec(text)) !== null) {
         const [_, quantity, description, unitPrice, extPrice] = match;
+        
+        // Skip SUBTOTAL and other summary lines
+        if (/^(subtotal|total|tax|freight|shipping)/i.test(description.trim())) {
+          continue;
+        }
         
         lineItems.push({
           quantity: parseFloat(quantity),
@@ -311,14 +358,14 @@ class InvoiceParser {
         });
       }
       
-      console.log(`Pattern 2 (Standard) found ${lineItems.length} line items`);
+      console.log(`Pattern 3 (Standard) found ${lineItems.length} line items`);
     }
 
-    // Pattern 3: Item description with amount on same line
+    // Pattern 4: Item description with amount on same line
     if (lineItems.length === 0) {
-      const pattern3 = /^[\s]*(.{15,100}?)\s+\$?([\d,]+\.\d{2})$/gm;
+      const pattern4 = /^[\s]*(.{15,100}?)\s+\$?([\d,]+\.\d{2})$/gm;
       
-      while ((match = pattern3.exec(text)) !== null) {
+      while ((match = pattern4.exec(text)) !== null) {
         const [_, description, amount] = match;
         
         // Skip common non-item lines
@@ -334,7 +381,7 @@ class InvoiceParser {
         });
       }
       
-      console.log(`Pattern 3 (Simple) found ${lineItems.length} line items`);
+      console.log(`Pattern 4 (Simple) found ${lineItems.length} line items`);
     }
 
     console.log('Final line items:', lineItems);
