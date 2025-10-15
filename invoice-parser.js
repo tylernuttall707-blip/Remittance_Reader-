@@ -141,20 +141,23 @@ class InvoiceParser {
       comments: []
     };
 
-    // Extract supplier name (usually at top of document)
+    // Extract supplier name - be very specific to avoid picking up footer text
     const supplierPatterns = [
-      /Sold By:?\s*\n?\s*([A-Z][A-Za-z\s&,.''-]+(?:LLC|Inc\.|Corp\.|Co\.|Company|Corporation|Limited|#\d+)?)/i,
-      /(?:BILL TO|FROM):?\s*\n?\s*([A-Z][A-Za-z\s&,.''-]+)/i,
-      /^([A-Z][A-Za-z\s&,.''-]+(?:LLC|Inc\.|Corp\.|Co\.|Company|Corporation|Limited))/m,
-      /^([A-Z\s&-]+(?:LLC|INC|CORP|#\d+))/m
+      // Pattern 1: "Sold By:" followed by company name on next line
+      /Sold By:[\s\r\n]+([A-Z][A-Z\s&,.''-]+(?:#\d+|LLC|Inc\.|Corp\.|Co\.)?)[\s\r\n]/i,
+      // Pattern 2: "BILL TO" or "FROM" followed by company name
+      /(?:BILL TO|FROM):[\s\r\n]+([A-Z][A-Za-z\s&,.''-]+(?:LLC|Inc\.|Corp\.|Co\.)?)[\s\r\n]/i,
+      // Pattern 3: Company name at very start of document (first 200 chars only)
+      /^(.{0,200}?)([A-Z][A-Z\s&-]+(?:LLC|INC|CORP|#\d+))[\s\r\n]/m
     ];
 
     for (const pattern of supplierPatterns) {
       const match = text.match(pattern);
       if (match) {
-        const supplier = match[1].trim();
-        // Skip if it's just "INVOICE" or similar header text
-        if (!/^I\s*N\s*V\s*O\s*I\s*C\s*E/i.test(supplier)) {
+        const supplier = (match[2] || match[1]).trim();
+        // Skip if it's just "INVOICE" or contains common footer text
+        if (!/^I\s*N\s*V\s*O\s*I\s*C\s*E/i.test(supplier) && 
+            !/(government|authorized|regulations|controlled)/i.test(supplier)) {
           result.supplier = supplier;
           break;
         }
@@ -263,11 +266,20 @@ class InvoiceParser {
     const lineItems = [];
 
     // Pattern 1: Affiliated Metals format (MATERIAL qty PCS @ price EA total)
-    const pattern1 = /MATERIAL\s+(\d+(?:\.\d+)?)\s+PCS\s+@\s+([\d,]+\.\d+)\s+EA\s+([\d,]+\.\d+)/gi;
+    // Be more flexible with whitespace
+    const pattern1 = /MATERIAL\s+(\d+(?:\.\d+)?)\s+PCS\s+@\s+([\d,]+\.?\d*)\s+EA\s+([\d,]+\.?\d*)/gi;
     let match;
     
     while ((match = pattern1.exec(text)) !== null) {
-      const [_, quantity, unitPrice, extPrice] = match;
+      const quantity = parseFloat(match[1]);
+      const unitPrice = this.parseMoney(match[2]);
+      const extPrice = this.parseMoney(match[3]);
+      
+      console.log('Affiliated Metals line item found:', {
+        quantity,
+        unitPrice,
+        extPrice
+      });
       
       // Try to find description on previous lines
       const beforeMatch = text.substring(Math.max(0, match.index - 300), match.index);
@@ -275,12 +287,14 @@ class InvoiceParser {
       const description = descMatch ? descMatch[1].trim() : 'Material';
       
       lineItems.push({
-        quantity: parseFloat(quantity),
+        quantity: quantity,
         description: description,
-        unitPrice: this.parseMoney(unitPrice),
-        amount: this.parseMoney(extPrice)
+        unitPrice: unitPrice,
+        amount: extPrice
       });
     }
+
+    console.log(`Pattern 1 (Affiliated Metals) found ${lineItems.length} line items`);
 
     // Pattern 2: Quantity, Description, Unit Price, Extended Price
     if (lineItems.length === 0) {
@@ -296,6 +310,8 @@ class InvoiceParser {
           amount: this.parseMoney(extPrice)
         });
       }
+      
+      console.log(`Pattern 2 (Standard) found ${lineItems.length} line items`);
     }
 
     // Pattern 3: Item description with amount on same line
@@ -317,8 +333,11 @@ class InvoiceParser {
           amount: this.parseMoney(amount)
         });
       }
+      
+      console.log(`Pattern 3 (Simple) found ${lineItems.length} line items`);
     }
 
+    console.log('Final line items:', lineItems);
     return lineItems;
   }
 
