@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Invoice Reader – AI Capture</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="invoice-styles.css">
+</head>
+<body>
+  <div class="app">
+    <!-- Sidebar: Upload -->
+    <aside class="sidebar">
+      <header>
+        <h1>
+          <svg class="icon" viewBox="0 0 24 24" fill="none">
+            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+            <path d="M14 2v6h6M16 13H8M16 17H8M10 9H8" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+          Read Invoice
+        </h1>
+        <span class="pill">BETA</span>
+      </header>
+
+      <div class="tabs">
+        <div class="tab active" data-kind="files">Invoices</div>
+        <div class="tab" data-kind="bills">Bills</div>
+      </div>
+      
+      <div class="uploader" id="uploader">
+        <div class="drop" id="drop">
+          <div>
+            <button class="cta" id="pick">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12" stroke="white" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+              Upload Invoice
+            </button>
+            <p class="hint">or drag and drop here<br>Supported: PDF, PNG, JPEG, XLSX, CSV</p>
+            <input id="file" type="file" accept=".pdf,.png,.jpg,.jpeg,.xlsx,.xls,.csv,image/*" />
+          </div>
+        </div>
+        
+        <div class="mini">
+          <div class="box">
+            <label>Currency</label>
+            <select id="currency">
+              <option value="USD" selected>USD</option>
+              <option value="CAD">CAD</option>
+              <option value="EUR">EUR</option>
+              <option value="GBP">GBP</option>
+            </select>
+          </div>
+        </div>
+        
+        <div class="sample-img">
+          <svg width="160" height="120" viewBox="0 0 200 150" fill="none">
+            <rect x="30" y="20" width="140" height="110" rx="4" fill="#f3f4f6" stroke="#d1d5db" stroke-width="2"/>
+            <rect x="40" y="30" width="50" height="8" rx="2" fill="#9ca3af"/>
+            <rect x="40" y="45" width="80" height="4" rx="2" fill="#d1d5db"/>
+            <rect x="40" y="53" width="60" height="4" rx="2" fill="#d1d5db"/>
+            <line x1="40" y1="70" x2="160" y2="70" stroke="#d1d5db" stroke-width="1"/>
+            <rect x="40" y="80" width="80" height="4" rx="2" fill="#d1d5db"/>
+            <rect x="40" y="90" width="70" height="4" rx="2" fill="#d1d5db"/>
+            <rect x="40" y="100" width="75" height="4" rx="2" fill="#d1d5db"/>
+            <rect x="130" y="115" width="30" height="8" rx="2" fill="#16a34a"/>
+          </svg>
+          <div class="sample-text">Upload supplier<br><strong>invoices & bills</strong></div>
+        </div>
+        
+        <div class="status" id="status">
+          Ready to capture invoice data.
+        </div>
+      </div>
+
+      <div class="nav-links">
+        <a href="index.html" class="nav-link">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
+            <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2M12 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8z" stroke="currentColor" stroke-width="2"/>
+          </svg>
+          Remittance Reader
+        </a>
+      </div>
+    </aside>
+
+    <!-- Main Form: Invoice Entry -->
+    <section class="report">
+      <header>
+        <h1>
+          <svg class="icon" viewBox="0 0 24 24" fill="none">
+            <rect x="3" y="3" width="18" height="18" rx="2" stroke="currentColor" stroke-width="2"/>
+            <path d="M9 3v18M3 9h6M3 15h6" stroke="currentColor" stroke-width="2"/>
+          </svg>
+          Invoice Entry
+        </h1>
+        <div class="toolbar">
+          <button class="btn" id="btnExport">Export CSV</button>
+          <button class="btn primary" id="btnPrint">Print</button>
+        </div>
+      </header>
+
+      <div class="amount-display">
+        <div class="amount-label">Total Amount</div>
+        <div class="amount-value" id="displayAmount">$0.00</div>
+        <div class="currency-note">Currency: <span id="currencyDisplay">USD</span></div>
+      </div>
+
+      <div class="grid">
+        <div class="card">
+          <h3>Supplier Information</h3>
+          <label>Supplier Name</label>
+          <input id="supplier" placeholder="e.g., Monroe Avex, LLC" />
+          
+          <label>Invoice Number</label>
+          <input id="invoiceId" placeholder="e.g., 117831" />
+        </div>
+        
+        <div class="card">
+          <h3>Dates & Terms</h3>
+          <label>Invoice Date</label>
+          <input id="invoiceDate" type="date" />
+          
+          <label>Due Date</label>
+          <input id="dueDate" type="date" />
+          
+          <label>Net Terms</label>
+          <input id="netTerms" placeholder="e.g., NET 30, C.O.D." />
+        </div>
+        
+        <div class="card">
+          <h3>Description</h3>
+          <textarea id="description" rows="5" placeholder="Brief description of goods/services"></textarea>
+          
+          <label>Total Amount</label>
+          <input id="totalAmount" type="text" placeholder="$0.00" />
+        </div>
+      </div>
+
+      <div class="table-container">
+        <div class="table-header">
+          Line Items
+          <button class="btn-add" id="btnAddLine">+ Add Line</button>
+        </div>
+        <table>
+          <thead>
+            <tr>
+              <th style="width:60px">Qty</th>
+              <th>Description</th>
+              <th style="width:15%">Unit Price</th>
+              <th style="width:15%">Amount</th>
+              <th style="width:40px"></th>
+            </tr>
+          </thead>
+          <tbody id="lineItems"></tbody>
+          <tfoot>
+            <tr>
+              <td colspan="3">Total</td>
+              <td id="lineItemsTotal">$0.00</td>
+              <td></td>
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+
+      <div class="comments-section">
+        <h3>Comments & Notes</h3>
+        <div id="commentsList"></div>
+        <textarea id="additionalComments" rows="3" placeholder="Add additional notes..."></textarea>
+      </div>
+
+      <div class="footer-actions">
+        <button class="btn" id="btnClear">Clear</button>
+        <button class="btn" id="btnSample">Load Sample</button>
+        <button class="btn good" id="btnSave">Save Invoice</button>
+      </div>
+    </section>
+  </div>
+
+  <div id="toast" class="toast hidden"></div>
+
+  <!-- Load libraries -->
+  <script>
+    window.libraryStatus = {
+      xlsx: false,
+      pdfjs: false
+    };
+  </script>
+  
+  <script 
+    src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js" 
+    onload="window.libraryStatus.xlsx = true; console.log('✅ XLSX loaded');"
+    onerror="console.error('❌ XLSX failed to load');">
+  </script>
+  
+  <!-- PDF.js will be loaded dynamically by the script -->
+  
+  <!-- Invoice parser and main script -->
+  <script src="invoice-parser.js"></script>
+  <script type="module" src="invoice-script.js"></script>
+</body>
+</html>
