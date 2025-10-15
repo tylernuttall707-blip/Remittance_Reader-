@@ -143,16 +143,21 @@ class InvoiceParser {
 
     // Extract supplier name (usually at top of document)
     const supplierPatterns = [
-      /^([A-Z][A-Za-z\s&,.''-]+(?:LLC|Inc\.|Corp\.|Co\.|Company|Corporation|Limited)?)/m,
-      /(?:BILL TO|Sold By|FROM):?\s*\n?\s*([A-Z][A-Za-z\s&,.''-]+)/i,
-      /^([A-Z\s&]+(?:LLC|INC|CORP))/m
+      /Sold By:?\s*\n?\s*([A-Z][A-Za-z\s&,.''-]+(?:LLC|Inc\.|Corp\.|Co\.|Company|Corporation|Limited|#\d+)?)/i,
+      /(?:BILL TO|FROM):?\s*\n?\s*([A-Z][A-Za-z\s&,.''-]+)/i,
+      /^([A-Z][A-Za-z\s&,.''-]+(?:LLC|Inc\.|Corp\.|Co\.|Company|Corporation|Limited))/m,
+      /^([A-Z\s&-]+(?:LLC|INC|CORP|#\d+))/m
     ];
 
     for (const pattern of supplierPatterns) {
       const match = text.match(pattern);
       if (match) {
-        result.supplier = match[1].trim();
-        break;
+        const supplier = match[1].trim();
+        // Skip if it's just "INVOICE" or similar header text
+        if (!/^I\s*N\s*V\s*O\s*I\s*C\s*E/i.test(supplier)) {
+          result.supplier = supplier;
+          break;
+        }
       }
     }
 
@@ -174,6 +179,7 @@ class InvoiceParser {
 
     // Extract invoice date
     const datePatterns = [
+      /Date:?\s*(\d{1,2}[A-Za-z]{3}\d{2})/i,  // Date:02Oct25
       /INVOICE\s+DATE:?\s*(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})/i,
       /DATE:?\s*(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})/i,
       /(?:Invoice Date|Dated?):?\s*(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})/i,
@@ -190,6 +196,7 @@ class InvoiceParser {
 
     // Extract due date
     const duePatterns = [
+      /Due:?\s*(\d{1,2}[A-Za-z]{3}\d{2})/i,  // Due:01Nov25
       /DUE\s+DATE:?\s*(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})/i,
       /PLEASE PAY.*?(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})/i,
       /Due:?\s*(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})/i
@@ -255,26 +262,47 @@ class InvoiceParser {
   extractLineItems(text) {
     const lineItems = [];
 
-    // Pattern 1: Quantity, Description, Unit Price, Extended Price
-    const pattern1 = /(\d+(?:\.\d+)?)\s+([A-Z0-9][^\$\n]{10,80}?)\s+\$?([\d,]+\.\d{2})\s+\$?([\d,]+\.\d{2})/gi;
+    // Pattern 1: Affiliated Metals format (MATERIAL qty PCS @ price EA total)
+    const pattern1 = /MATERIAL\s+(\d+(?:\.\d+)?)\s+PCS\s+@\s+([\d,]+\.\d+)\s+EA\s+([\d,]+\.\d+)/gi;
     let match;
-
+    
     while ((match = pattern1.exec(text)) !== null) {
-      const [_, quantity, description, unitPrice, extPrice] = match;
+      const [_, quantity, unitPrice, extPrice] = match;
+      
+      // Try to find description on previous lines
+      const beforeMatch = text.substring(Math.max(0, match.index - 300), match.index);
+      const descMatch = beforeMatch.match(/\d+\s+([A-Z][A-Z\s\d.-]+?)(?:\s+\d+\s+PCS|\s+ASTM)/i);
+      const description = descMatch ? descMatch[1].trim() : 'Material';
       
       lineItems.push({
         quantity: parseFloat(quantity),
-        description: description.trim(),
+        description: description,
         unitPrice: this.parseMoney(unitPrice),
         amount: this.parseMoney(extPrice)
       });
     }
 
-    // Pattern 2: Item description with amount on same line
+    // Pattern 2: Quantity, Description, Unit Price, Extended Price
     if (lineItems.length === 0) {
-      const pattern2 = /^[\s]*(.{15,100}?)\s+\$?([\d,]+\.\d{2})$/gm;
+      const pattern2 = /(\d+(?:\.\d+)?)\s+([A-Z0-9][^\$\n]{10,80}?)\s+\$?([\d,]+\.\d{2})\s+\$?([\d,]+\.\d{2})/gi;
       
       while ((match = pattern2.exec(text)) !== null) {
+        const [_, quantity, description, unitPrice, extPrice] = match;
+        
+        lineItems.push({
+          quantity: parseFloat(quantity),
+          description: description.trim(),
+          unitPrice: this.parseMoney(unitPrice),
+          amount: this.parseMoney(extPrice)
+        });
+      }
+    }
+
+    // Pattern 3: Item description with amount on same line
+    if (lineItems.length === 0) {
+      const pattern3 = /^[\s]*(.{15,100}?)\s+\$?([\d,]+\.\d{2})$/gm;
+      
+      while ((match = pattern3.exec(text)) !== null) {
         const [_, description, amount] = match;
         
         // Skip common non-item lines
@@ -379,6 +407,26 @@ class InvoiceParser {
     }
 
     const str = String(value).trim();
+    
+    // Try DDMmmYY format (e.g., "02Oct25")
+    const monthMap = {
+      jan: '01', feb: '02', mar: '03', apr: '04', may: '05', jun: '06',
+      jul: '07', aug: '08', sep: '09', oct: '10', nov: '11', dec: '12'
+    };
+    
+    const ddmmmyy = str.match(/(\d{1,2})([A-Za-z]{3})(\d{2})/i);
+    if (ddmmmyy) {
+      const day = ddmmmyy[1].padStart(2, '0');
+      const month = monthMap[ddmmmyy[2].toLowerCase()];
+      let year = ddmmmyy[3];
+      
+      // Convert 2-digit year to 4-digit
+      year = parseInt(year) > 50 ? '19' + year : '20' + year;
+      
+      if (month) {
+        return `${year}-${month}-${day}`;
+      }
+    }
     
     // Try MM/DD/YYYY or MM/DD/YY
     const mdy = str.match(/(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})/);
