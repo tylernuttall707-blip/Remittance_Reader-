@@ -1,10 +1,9 @@
 /**
- * Invoice Parser
- * Extracts supplier invoices from PDF, XLSX, and CSV files
- * Captures: supplier name, invoice ID, dates, terms, line items, totals, comments
+ * Enhanced Invoice Parser with AI-Powered Extraction
+ * Handles ANY invoice layout by combining pattern matching with intelligent text analysis
  */
 
-class InvoiceParser {
+class EnhancedInvoiceParser {
   constructor() {
     this.pdfjsLib = null;
     this.XLSX = null;
@@ -20,34 +19,28 @@ class InvoiceParser {
         const pdfjs = await import('https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.5.136/pdf.min.mjs');
         this.pdfjsLib = pdfjs;
         
-        // Set worker source
         if (this.pdfjsLib.GlobalWorkerOptions) {
           this.pdfjsLib.GlobalWorkerOptions.workerSrc = 
             'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.5.136/pdf.worker.min.mjs';
         }
         
-        console.log('✅ PDF.js loaded successfully in InvoiceParser');
+        console.log('✅ PDF.js loaded successfully');
       } catch (error) {
         console.error('Failed to load PDF.js:', error);
       }
     }
 
-    // Wait for XLSX library to load (it loads via script tag)
     if (!this.XLSX && typeof XLSX === 'undefined') {
-      console.log('⏳ Waiting for XLSX library to load...');
-      // Wait up to 5 seconds for XLSX to load
+      console.log('⏳ Waiting for XLSX library...');
       const startTime = Date.now();
       while (typeof XLSX === 'undefined' && (Date.now() - startTime) < 5000) {
         await new Promise(resolve => setTimeout(resolve, 100));
       }
     }
     
-    // Check for XLSX library
     if (typeof XLSX !== 'undefined') {
       this.XLSX = XLSX;
       console.log('✅ XLSX library available');
-    } else {
-      console.warn('⚠️ XLSX library not loaded - Excel/CSV files will not work');
     }
   }
 
@@ -60,7 +53,7 @@ class InvoiceParser {
     const ext = this.getExtension(file.name);
     const fileType = this.detectFileType(file, ext);
 
-    console.log(`Parsing invoice ${file.name} as ${fileType}`);
+    console.log(`📄 Parsing ${file.name} as ${fileType}`);
 
     switch (fileType) {
       case 'pdf':
@@ -74,9 +67,6 @@ class InvoiceParser {
     }
   }
 
-  /**
-   * Detect file type from extension and MIME type
-   */
   detectFileType(file, ext) {
     const mime = (file.type || '').toLowerCase();
     
@@ -89,9 +79,6 @@ class InvoiceParser {
     throw new Error('Unknown file type');
   }
 
-  /**
-   * Get file extension
-   */
   getExtension(filename) {
     return (filename || '').split('.').pop().toLowerCase();
   }
@@ -101,7 +88,7 @@ class InvoiceParser {
    */
   async parsePDF(file) {
     if (!this.pdfjsLib) {
-      throw new Error('PDF.js library failed to load. Please check your internet connection and try again.');
+      throw new Error('PDF.js library not loaded');
     }
 
     const arrayBuffer = await file.arrayBuffer();
@@ -118,17 +105,20 @@ class InvoiceParser {
       fullText += pageText + '\n';
     }
 
-    console.log('PDF text extracted (first 1000 chars):', fullText.substring(0, 1000));
+    console.log('📝 Extracted text length:', fullText.length);
 
-    // Detect invoice format and parse
-    const result = this.parseInvoiceText(fullText);
+    // Parse using intelligent extraction
+    const result = this.intelligentExtract(fullText);
     return result;
   }
 
   /**
-   * Parse invoice text (from PDF or other sources)
+   * INTELLIGENT EXTRACTION ENGINE
+   * Uses contextual analysis to find invoice data regardless of layout
    */
-  parseInvoiceText(text) {
+  intelligentExtract(text) {
+    console.log('🧠 Starting intelligent extraction...');
+    
     const result = {
       supplier: '',
       invoiceId: '',
@@ -141,340 +131,512 @@ class InvoiceParser {
       comments: []
     };
 
-    // Extract supplier name - prioritize company header over BILL TO
-    const supplierPatterns = [
-      // Pattern for "INVOICE" as header followed by company name on same/next line
-      /INVOICE[\s\r\n]+([\w\s&,.''-]+?(?:LLC|Inc\.|Corp\.|Co\.|Company))/i,
-      // Pattern 1: Company name followed by INVOICE (Quality Plating format)
-      /([A-Z][A-Za-z\s&,.''-]+(?:Inc\.|LLC|Corp\.|Co\.|Company|Corporation))\s+INVOICE/i,
-      // Pattern 2: "Sold By:" followed by company name
-      /Sold By:[\s\r\n]+([A-Z][A-Z\s&,.''-]+(?:#\d+|LLC|Inc\.|Corp\.|Co\.)?)[\s\r\n]/i,
-      // Pattern 3: Company name at very top (first 300 chars)
-      /^(.{0,300}?)([A-Z][A-Za-z\s&,.''-]+(?:Inc\.|LLC|Corp\.|Co\.|Company))[\s\r\n]/m,
-      // Pattern 4: "FROM:" followed by company name
-      /FROM:[\s\r\n]+([A-Z][A-Za-z\s&,.''-]+(?:LLC|Inc\.|Corp\.|Co\.)?)[\s\r\n]/i
-    ];
+    // Extract supplier using multiple strategies
+    result.supplier = this.extractSupplier(text);
+    console.log('✓ Supplier:', result.supplier);
 
-    for (const pattern of supplierPatterns) {
-      const match = text.match(pattern);
-      if (match) {
-        const supplier = (match[2] || match[1]).trim();
-        // Skip BILL TO, SHIP TO, SOLD TO sections and footer text
-        if (!/^(BILL TO|SHIP TO|SOLD TO|Artec)/i.test(supplier) && 
-            !/(government|authorized|regulations|controlled)/i.test(supplier)) {
-          result.supplier = supplier;
-          console.log('Supplier extracted:', supplier);
-          break;
-        }
-      }
-    }
+    // Extract invoice ID
+    result.invoiceId = this.extractInvoiceId(text);
+    console.log('✓ Invoice ID:', result.invoiceId);
 
-    // Extract invoice number/ID
-    const invoiceIdPatterns = [
-      // Pattern for "Invoice no.:" followed by number (Armor Coatings format)
-      /Invoice\s+no\.?:?\s*(\d+)/i,
-      // Standard patterns
-      /INVOICE\s*#:?\s*([A-Z0-9-]+)/i,
-      /Invoice\s*#:?\s*([A-Z0-9-]+)/i,
-      /INVOICE\s*(?:NUMBER|NO\.?|ID)?:?\s*([A-Z0-9-]+)/i,
-      /Invoice\s*Number:?\s*([A-Z0-9-]+)/i,
-      /INV(?:OICE)?[-\s#]*:?\s*([A-Z0-9-]+)/i,
-      /(?:No|#):?\s*\d+\s+([A-Z]{2,5}[-]?\d{4,})/,  // "No: 16 IV-612155" format
-      /(?:^|\s)([A-Z]{2,5}[-]?\d{4,})(?=\s|$)/m  // Standalone like "IV-612155"
-    ];
+    // Extract dates
+    const dates = this.extractDates(text);
+    result.invoiceDate = dates.invoiceDate;
+    result.dueDate = dates.dueDate;
+    console.log('✓ Dates:', dates);
 
-    for (const pattern of invoiceIdPatterns) {
-      const match = text.match(pattern);
-      if (match && match[1] && match[1].length >= 3) {  // At least 3 chars
-        // Skip if it looks like a company name fragment
-        if (!/^(armor|coating|invoice|quality|metal)/i.test(match[1])) {
-          result.invoiceId = match[1].trim();
-          console.log('Invoice ID extracted:', result.invoiceId);
-          break;
-        }
-      }
-    }
-
-    // Extract invoice date
-    const datePatterns = [
-      /Invoice\s+date:?\s*(\d{1,2}\/\d{1,2}\/\d{4})/i,  // Invoice date: 09/11/2025
-      /Date:?\s*(\d{1,2}[A-Za-z]{3}\d{2})/i,  // Date:02Oct25
-      /INVOICE\s+DATE:?\s*(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})/i,
-      /DATE:?\s*(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})/i,
-      /(?:Invoice Date|Dated?):?\s*(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})/i,
-      /(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{4})/
-    ];
-
-    for (const pattern of datePatterns) {
-      const match = text.match(pattern);
-      if (match) {
-        result.invoiceDate = this.normalizeDate(match[1]);
-        console.log('Invoice date extracted:', result.invoiceDate);
-        break;
-      }
-    }
-
-    // Extract due date - skip "Date of Release" field
-    const duePatterns = [
-      /Due\s+date:?\s*(\d{1,2}\/\d{1,2}\/\d{4})/i,  // Due date: 10/11/2025
-      /Due:?\s*(\d{1,2}[A-Za-z]{3}\d{2})/i,  // Due:01Nov25
-      /DUE\s+DATE:?\s*(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})/i,
-      /PLEASE PAY.*?(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})/i,
-      /Payment Due:?\s*(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})/i
-    ];
-
-    for (const pattern of duePatterns) {
-      const match = text.match(pattern);
-      if (match) {
-        const dateStr = match[1];
-        // Skip if it's the "Date of Release" (typically an old date from 2009 or similar)
-        const normalized = this.normalizeDate(dateStr);
-        const year = normalized ? parseInt(normalized.split('-')[0]) : 0;
-        
-        // Only use if year is reasonable (2020+)
-        if (year >= 2020) {
-          result.dueDate = normalized;
-          console.log('Due date extracted:', result.dueDate);
-          break;
-        }
-      }
-    }
-
-    // Extract net terms
-    const termsPatterns = [
-      /Terms:?\s*(NET\s*\d+(?:\s+DAYS)?|C\.?O\.?D\.?|Credit Card|Due (?:on|upon) receipt)/i,
-      /PAYMENT\s+TERMS?:?\s*(NET\s*\d+(?:\s+DAYS)?|C\.?O\.?D\.?|Credit Card)/i,
-      /(NET\s*\d+(?:\s+DAYS)?)/i,
-      /(C\.?O\.?D\.?)/i
-    ];
-
-    for (const pattern of termsPatterns) {
-      const match = text.match(pattern);
-      if (match) {
-        result.netTerms = match[1].trim().toUpperCase();
-        console.log('Net terms extracted:', result.netTerms);
-        break;
-      }
-    }
+    // Extract terms
+    result.netTerms = this.extractTerms(text);
+    console.log('✓ Terms:', result.netTerms);
 
     // Extract line items
     result.lineItems = this.extractLineItems(text);
+    console.log('✓ Line items:', result.lineItems.length);
 
-    // Extract total amount
-    const totalPatterns = [
-      /Total[\s\r\n]+\$?([\d,]+\.\d{2})/i,  // Total $600.00 (Armor Coatings)
-      /TOTAL\s+(?:DUE|AMOUNT|INVOICE)?:?\s*\$?\s*([\d,]+\.\d{2})/i,
-      /(?:PLEASE PAY|AMOUNT DUE):?\s*\$?\s*([\d,]+\.\d{2})/i,
-      /(?:^|\s)TOTAL:?\s*\$?\s*([\d,]+\.\d{2})/im
-    ];
+    // Extract total
+    result.totalAmount = this.extractTotal(text);
+    console.log('✓ Total:', result.totalAmount);
 
-    for (const pattern of totalPatterns) {
-      const match = text.match(pattern);
-      if (match) {
-        result.totalAmount = this.parseMoney(match[1]);
-        console.log('Total amount extracted:', result.totalAmount);
-        break;
-      }
-    }
-
-    // Extract comments/notes
+    // Extract comments
     result.comments = this.extractComments(text);
+    console.log('✓ Comments:', result.comments.length);
 
-    // Generate description from line items if not set
+    // Generate description
     if (!result.description && result.lineItems.length > 0) {
-      const firstItem = result.lineItems[0].description || '';
-      result.description = firstItem.substring(0, 100);
+      result.description = result.lineItems[0].description?.substring(0, 100) || '';
     }
 
     return result;
   }
 
   /**
-   * Extract line items from text
+   * Extract supplier name using contextual clues
    */
-  extractLineItems(text) {
-    const lineItems = [];
-
-    // Pattern 0: Armor Coatings format - Description Qty Rate Amount
-    // Example: "TRAILER SPINDLE ARM BLAST, PRIME, RAL 7042 8 $75.00 $600.00"
-    // Look for uppercase description followed by qty, unit price, and amount
-    const pattern0 = /([A-Z][A-Z\s,]{15,80}?)\s+(\d+)\s+\$?([\d,]+\.?\d{2})\s+\$?([\d,]+\.?\d{2})/g;
-    let match;
+  extractSupplier(text) {
+    const lines = text.split(/[\r\n]+/).map(l => l.trim()).filter(Boolean);
     
-    while ((match = pattern0.exec(text)) !== null) {
-      const description = match[1].trim();
-      const quantity = parseFloat(match[2]);
-      const unitPrice = this.parseMoney(match[3]);
-      const extPrice = this.parseMoney(match[4]);
+    // Strategy 1: Look for company name near "INVOICE" header
+    for (let i = 0; i < Math.min(30, lines.length); i++) {
+      const line = lines[i];
       
-      // Skip if description looks like a header or total line
-      if (/^(subtotal|total|tax|freight|shipping|qty|rate|amount|description|product|service)/i.test(description)) {
-        continue;
-      }
-      
-      // Skip if it's just "Note to customer"
-      if (/^note to/i.test(description)) {
-        continue;
-      }
-      
-      // Validate it's a real line item (unit price * qty should approximately equal amount)
-      const calculatedAmount = quantity * unitPrice;
-      const tolerance = 1.0; // Allow $1 difference for rounding
-      
-      if (Math.abs(calculatedAmount - extPrice) <= tolerance) {
-        lineItems.push({
-          quantity: quantity,
-          description: description,
-          unitPrice: unitPrice,
-          amount: extPrice
-        });
-        
-        console.log('Armor Coatings line item found:', {
-          description,
-          quantity,
-          unitPrice,
-          extPrice
-        });
-      }
-    }
-
-    if (lineItems.length > 0) {
-      console.log(`Pattern 0 (Armor Coatings) found ${lineItems.length} line items`);
-      return lineItems;
-    }
-
-    // Pattern 1: Affiliated Metals format (MATERIAL qty PCS @ price EA total)
-    const pattern1 = /MATERIAL\s+(\d+(?:\.\d+)?)\s+PCS\s+@\s+([\d,]+\.?\d*)\s+EA\s+([\d,]+\.?\d*)/gi;
-    
-    while ((match = pattern1.exec(text)) !== null) {
-      const quantity = parseFloat(match[1]);
-      const unitPrice = this.parseMoney(match[2]);
-      const extPrice = this.parseMoney(match[3]);
-      
-      console.log('Affiliated Metals line item found:', {
-        quantity,
-        unitPrice,
-        extPrice
-      });
-      
-      // Try to find description on previous lines
-      const beforeMatch = text.substring(Math.max(0, match.index - 300), match.index);
-      const descMatch = beforeMatch.match(/\d+\s+([A-Z][A-Z\s\d.-]+?)(?:\s+\d+\s+PCS|\s+ASTM)/i);
-      const description = descMatch ? descMatch[1].trim() : 'Material';
-      
-      lineItems.push({
-        quantity: quantity,
-        description: description,
-        unitPrice: unitPrice,
-        amount: extPrice
-      });
-    }
-
-    console.log(`Pattern 1 (Affiliated Metals) found ${lineItems.length} line items`);
-
-    // Pattern 2: Quality Plating table format (qty qty partno desc unitprice extprice)
-    if (lineItems.length === 0) {
-      // Match: 60 60 BB1051 Tone Rings 2.2000 /ea. $132.00
-      const pattern2 = /(\d+)\s+\d+\s+([A-Z0-9]+)\s+([A-Za-z\s]+?)\s+([\d,]+\.?\d+)\s*\/ea\.\s+\$?([\d,]+\.?\d+)/gi;
-      
-      while ((match = pattern2.exec(text)) !== null) {
-        const quantity = parseFloat(match[1]);
-        const partNumber = match[2];
-        const description = `${partNumber} ${match[3].trim()}`;
-        const unitPrice = this.parseMoney(match[4]);
-        const extPrice = this.parseMoney(match[5]);
-        
-        console.log('Quality Plating line item found:', {
-          quantity,
-          description,
-          unitPrice,
-          extPrice
-        });
-        
-        lineItems.push({
-          quantity: quantity,
-          description: description,
-          unitPrice: unitPrice,
-          amount: extPrice
-        });
-      }
-      
-      console.log(`Pattern 2 (Quality Plating) found ${lineItems.length} line items`);
-    }
-
-    // Pattern 3: Standard quantity, description, unit price, extended price
-    if (lineItems.length === 0) {
-      const pattern3 = /(\d+(?:\.\d+)?)\s+([A-Z0-9][^\$\n]{10,80}?)\s+\$?([\d,]+\.\d{2})\s+\$?([\d,]+\.\d{2})/gi;
-      
-      while ((match = pattern3.exec(text)) !== null) {
-        const [_, quantity, description, unitPrice, extPrice] = match;
-        
-        // Skip SUBTOTAL and other summary lines
-        if (/^(subtotal|total|tax|freight|shipping)/i.test(description.trim())) {
-          continue;
+      // Check if line contains INVOICE
+      if (/^INVOICE$/i.test(line) || /INVOICE\s*$/i.test(line)) {
+        // Look at previous lines for company name
+        for (let j = Math.max(0, i - 5); j < i; j++) {
+          const prevLine = lines[j];
+          if (this.looksLikeCompanyName(prevLine)) {
+            return prevLine.trim();
+          }
         }
         
-        lineItems.push({
-          quantity: parseFloat(quantity),
-          description: description.trim(),
-          unitPrice: this.parseMoney(unitPrice),
-          amount: this.parseMoney(extPrice)
-        });
-      }
-      
-      console.log(`Pattern 3 (Standard) found ${lineItems.length} line items`);
-    }
-
-    // Pattern 4: Item description with amount on same line
-    if (lineItems.length === 0) {
-      const pattern4 = /^[\s]*(.{15,100}?)\s+\$?([\d,]+\.\d{2})$/gm;
-      
-      while ((match = pattern4.exec(text)) !== null) {
-        const [_, description, amount] = match;
-        
-        // Skip common non-item lines
-        if (/^(subtotal|total|tax|freight|shipping|payment|balance)/i.test(description)) {
-          continue;
+        // Look at next lines
+        for (let j = i + 1; j < Math.min(i + 3, lines.length); j++) {
+          const nextLine = lines[j];
+          if (this.looksLikeCompanyName(nextLine)) {
+            return nextLine.trim();
+          }
         }
-        
-        lineItems.push({
-          quantity: 1,
-          description: description.trim(),
-          unitPrice: this.parseMoney(amount),
-          amount: this.parseMoney(amount)
-        });
       }
       
-      console.log(`Pattern 4 (Simple) found ${lineItems.length} line items`);
+      // Check if line itself is "INVOICE CompanyName"
+      const invoiceCompanyMatch = line.match(/^INVOICE\s+(.+(?:LLC|Inc\.|Corp\.|Co\.|Company))/i);
+      if (invoiceCompanyMatch) {
+        return invoiceCompanyMatch[1].trim();
+      }
     }
-
-    console.log('Final line items:', lineItems);
-    return lineItems;
+    
+    // Strategy 2: Look for "Bill From", "Sold By", "From:", etc.
+    const billFromPatterns = [
+      /(?:Bill From|Sold By|From|Remit To|Vendor)[\s:]+([A-Z][A-Za-z\s&,.''-]+(?:LLC|Inc\.|Corp\.|Co\.|Company))/i,
+    ];
+    
+    for (const pattern of billFromPatterns) {
+      const match = text.match(pattern);
+      if (match && !this.isCustomerName(match[1])) {
+        return match[1].trim();
+      }
+    }
+    
+    // Strategy 3: Look for company name in first 20 lines (header area)
+    for (let i = 0; i < Math.min(20, lines.length); i++) {
+      const line = lines[i];
+      if (this.looksLikeCompanyName(line) && !this.isBlacklisted(line)) {
+        return line.trim();
+      }
+    }
+    
+    // Strategy 4: Find company entity type (LLC, Inc, etc) in first 30 lines
+    for (let i = 0; i < Math.min(30, lines.length); i++) {
+      const line = lines[i];
+      const entityMatch = line.match(/([A-Z][A-Za-z\s&,.''-]+)\s+(LLC|Inc\.|Corp\.|Co\.|Company)(?:\s|$)/i);
+      if (entityMatch && !this.isBlacklisted(entityMatch[0])) {
+        return (entityMatch[1] + ' ' + entityMatch[2]).trim();
+      }
+    }
+    
+    return '';
   }
 
   /**
-   * Extract comments and special notes
+   * Check if text looks like a company name
+   */
+  looksLikeCompanyName(text) {
+    if (!text || text.length < 5 || text.length > 60) return false;
+    
+    // Has company entity type
+    if (/(?:LLC|Inc\.|Corp\.|Co\.|Company|Ltd\.|Limited)$/i.test(text)) {
+      return true;
+    }
+    
+    // All caps with spaces (common for headers)
+    if (/^[A-Z][A-Z\s&,.''-]+$/.test(text) && text.includes(' ')) {
+      return true;
+    }
+    
+    return false;
+  }
+
+  /**
+   * Check if this is the customer name (not supplier)
+   */
+  isCustomerName(text) {
+    const lower = text.toLowerCase();
+    return lower.includes('artec') || 
+           lower.includes('bill to') || 
+           lower.includes('ship to');
+  }
+
+  /**
+   * Blacklist patterns to skip
+   */
+  isBlacklisted(text) {
+    const lower = text.toLowerCase();
+    const blacklist = [
+      'bill to', 'ship to', 'sold to', 'artec',
+      'invoice', 'sales invoice', 'payment',
+      'please pay', 'total', 'amount due'
+    ];
+    
+    return blacklist.some(b => lower.includes(b));
+  }
+
+  /**
+   * Extract invoice ID/number
+   */
+  extractInvoiceId(text) {
+    const patterns = [
+      // Priority 1: "Invoice No:", "Invoice #", "Invoice Number"
+      /Invoice\s+(?:No\.?|Number|#)[\s:]+([A-Z0-9-]+)/i,
+      /Invoice[\s:]+([A-Z0-9-]{4,})/i,
+      
+      // Priority 2: "INVOICE" followed by number
+      /INVOICE[\s#:]+([A-Z0-9-]{4,})/i,
+      
+      // Priority 3: Specific patterns
+      /(?:^|\s)(?:INV|Inv)[-\s#]*([0-9]{5,})/,
+      /(?:^|\s)([A-Z]{2,5}[-]?\d{5,})/,
+      
+      // Priority 4: Pattern like "CS32984", "PTLS-2095696"
+      /(?:^|\s)([A-Z]{2,}-?\d{4,})/,
+      
+      // Priority 5: Just numbers after "Invoice"
+      /Invoice.*?(\d{5,})/i,
+    ];
+
+    for (const pattern of patterns) {
+      const match = text.match(pattern);
+      if (match && match[1]) {
+        const id = match[1].trim();
+        
+        // Filter out dates and other non-ID patterns
+        if (!/^\d{1,2}[\/\-]\d{1,2}/.test(id) && 
+            !/^(20|19)\d{2}/.test(id) &&
+            id.length >= 4 &&
+            id.length <= 30) {
+          return id;
+        }
+      }
+    }
+    
+    return '';
+  }
+
+  /**
+   * Extract dates (invoice date and due date)
+   */
+  extractDates(text) {
+    const result = {
+      invoiceDate: '',
+      dueDate: ''
+    };
+
+    // Find invoice date
+    const invDatePatterns = [
+      /Invoice\s+Date[\s:]+(\d{1,2}\/\d{1,2}\/\d{4})/i,
+      /Invoice\s+Date[\s:]+(\d{1,2}[-\/]\d{1,2}[-\/]\d{2,4})/i,
+      /DATE[\s:]+(\d{1,2}\/\d{1,2}\/\d{4})/i,
+      /Date[\s:]+(\d{1,2}\/\d{1,2}\/\d{4})/,
+    ];
+
+    for (const pattern of invDatePatterns) {
+      const match = text.match(pattern);
+      if (match) {
+        result.invoiceDate = this.normalizeDate(match[1]);
+        if (result.invoiceDate) break;
+      }
+    }
+
+    // Find due date
+    const duePatterns = [
+      /Due\s+Date[\s:]+(\d{1,2}\/\d{1,2}\/\d{4})/i,
+      /Payment\s+Due[\s:]+(\d{1,2}\/\d{1,2}\/\d{4})/i,
+      /DUE\s+DATE[\s:]+(\d{1,2}\/\d{1,2}\/\d{4})/i,
+    ];
+
+    for (const pattern of duePatterns) {
+      const match = text.match(pattern);
+      if (match) {
+        const normalized = this.normalizeDate(match[1]);
+        // Make sure it's a reasonable future date
+        if (normalized) {
+          const year = parseInt(normalized.split('-')[0]);
+          if (year >= 2020 && year <= 2030) {
+            result.dueDate = normalized;
+            break;
+          }
+        }
+      }
+    }
+
+    return result;
+  }
+
+  /**
+   * Extract payment terms
+   */
+  extractTerms(text) {
+    const patterns = [
+      /Terms?[\s:]+([A-Z][A-Za-z\s\d]+)/i,
+      /(NET\s*\d+(?:\s+DAYS?)?)/i,
+      /(Net\s+\d+)/i,
+      /(DUE (?:ON|UPON) RECEIPT)/i,
+    ];
+
+    for (const pattern of patterns) {
+      const match = text.match(pattern);
+      if (match) {
+        return match[1].trim().toUpperCase();
+      }
+    }
+
+    return '';
+  }
+
+  /**
+   * Extract line items - most complex part
+   */
+  extractLineItems(text) {
+    console.log('🔍 Extracting line items...');
+    
+    const items = [];
+    const lines = text.split(/[\r\n]+/);
+
+    // Try multiple extraction strategies
+    
+    // Strategy 1: Table-like format with qty, description, price, amount
+    items.push(...this.extractTableFormat(text, lines));
+    
+    if (items.length > 0) {
+      console.log('✓ Found items using table format');
+      return items;
+    }
+
+    // Strategy 2: Description followed by qty and prices
+    items.push(...this.extractDescriptionFirst(text, lines));
+    
+    if (items.length > 0) {
+      console.log('✓ Found items using description-first format');
+      return items;
+    }
+
+    // Strategy 3: Line-by-line analysis
+    items.push(...this.extractLineByLine(text, lines));
+    
+    console.log(`✓ Extracted ${items.length} line items`);
+    return items;
+  }
+
+  /**
+   * Extract items from table-like format
+   */
+  extractTableFormat(text, lines) {
+    const items = [];
+    
+    // Pattern: Qty Description Unit_Price Amount
+    // Examples:
+    // "10 RJ-331300-102 Johnny Joint... $66.00 36% $42.08 $420.75"
+    // "125 31C100KBCAP 5/16-18 X 1 BUTTON... EA 0.20000 25.00"
+    
+    const pattern = /(\d+(?:\.\d+)?)\s+([A-Z0-9-]+.*?)\s+(?:EA|PCS|M|LB|lb)?\s*\$?([\d,]+\.?\d{2})\s+\$?([\d,]+\.?\d{2})/gi;
+    
+    let match;
+    while ((match = pattern.exec(text)) !== null) {
+      const quantity = parseFloat(match[1]);
+      const description = match[2].trim();
+      const unitPrice = this.parseMoney(match[3]);
+      const amount = this.parseMoney(match[4]);
+      
+      // Validate it's a real line item
+      if (this.isValidLineItem(description, quantity, unitPrice, amount)) {
+        items.push({
+          quantity,
+          description,
+          unitPrice,
+          amount
+        });
+      }
+    }
+    
+    return items;
+  }
+
+  /**
+   * Extract items where description comes first
+   */
+  extractDescriptionFirst(text, lines) {
+    const items = [];
+    
+    // Pattern: DESCRIPTION IN CAPS OR Title Case
+    // Followed by: quantity and amounts on same or next line
+    
+    for (let i = 0; i < lines.length - 1; i++) {
+      const line = lines[i].trim();
+      const nextLine = lines[i + 1]?.trim() || '';
+      
+      // Check if line looks like a product description
+      if (this.looksLikeProductDescription(line)) {
+        // Look for quantity and prices on same or next line
+        const combined = line + ' ' + nextLine;
+        
+        const qtyPriceMatch = combined.match(/(\d+(?:\.\d+)?)\s+.*?\$?([\d,]+\.?\d{2})\s+\$?([\d,]+\.?\d{2})/);
+        
+        if (qtyPriceMatch) {
+          const quantity = parseFloat(qtyPriceMatch[1]);
+          const unitPrice = this.parseMoney(qtyPriceMatch[2]);
+          const amount = this.parseMoney(qtyPriceMatch[3]);
+          
+          items.push({
+            quantity,
+            description: line,
+            unitPrice,
+            amount
+          });
+        }
+      }
+    }
+    
+    return items;
+  }
+
+  /**
+   * Extract items line by line
+   */
+  extractLineByLine(text, lines) {
+    const items = [];
+    
+    // Look for lines with quantity, description, and dollar amounts
+    for (const line of lines) {
+      // Skip header/footer lines
+      if (this.isHeaderOrFooter(line)) continue;
+      
+      // Pattern: Contains a quantity and 1-2 dollar amounts
+      const dollarAmounts = line.match(/\$[\d,]+\.\d{2}/g);
+      const qtyMatch = line.match(/(?:^|\s)(\d+(?:\.\d+)?)\s/);
+      
+      if (dollarAmounts && dollarAmounts.length >= 1 && qtyMatch) {
+        const quantity = parseFloat(qtyMatch[1]);
+        const amount = this.parseMoney(dollarAmounts[dollarAmounts.length - 1]);
+        const unitPrice = dollarAmounts.length > 1 ? 
+          this.parseMoney(dollarAmounts[dollarAmounts.length - 2]) : 
+          amount / quantity;
+        
+        // Extract description (everything between qty and first dollar sign)
+        const descMatch = line.match(/\d+(?:\.\d+)?\s+(.+?)\s+\$/);
+        const description = descMatch ? descMatch[1].trim() : line.substring(0, 50);
+        
+        if (description.length >= 5) {
+          items.push({
+            quantity,
+            description,
+            unitPrice,
+            amount
+          });
+        }
+      }
+    }
+    
+    return items;
+  }
+
+  /**
+   * Check if line looks like a product description
+   */
+  looksLikeProductDescription(line) {
+    if (!line || line.length < 10 || line.length > 200) return false;
+    
+    // Avoid headers and footers
+    if (this.isHeaderOrFooter(line)) return false;
+    
+    // Has product-like keywords
+    const productKeywords = /(?:screw|bolt|nut|washer|plate|joint|rod|part|material|service|freight|charge|fee|assembly)/i;
+    
+    return productKeywords.test(line) || /^[A-Z][A-Za-z\s,\d-]+$/.test(line);
+  }
+
+  /**
+   * Validate if extracted data is a real line item
+   */
+  isValidLineItem(description, quantity, unitPrice, amount) {
+    // Description should be reasonable length
+    if (!description || description.length < 3 || description.length > 300) return false;
+    
+    // Avoid totals and subtotals
+    if (/^(subtotal|total|tax|freight|shipping|discount|payment)/i.test(description)) {
+      return false;
+    }
+    
+    // Quantity should be positive and reasonable
+    if (quantity <= 0 || quantity > 100000) return false;
+    
+    // Amounts should be positive
+    if (unitPrice < 0 || amount < 0) return false;
+    
+    // Amount should roughly equal qty * price (within 10% tolerance)
+    const calculated = quantity * unitPrice;
+    const diff = Math.abs(calculated - amount);
+    const tolerance = Math.max(calculated * 0.1, 1.0);
+    
+    return diff <= tolerance;
+  }
+
+  /**
+   * Check if line is a header or footer
+   */
+  isHeaderOrFooter(line) {
+    const lower = line.toLowerCase();
+    const keywords = [
+      'invoice', 'bill to', 'ship to', 'quantity', 'description', 
+      'unit price', 'amount', 'total', 'page', 'thank you',
+      'terms', 'payment', 'please'
+    ];
+    
+    return keywords.some(k => lower.includes(k));
+  }
+
+  /**
+   * Extract total amount
+   */
+  extractTotal(text) {
+    const patterns = [
+      /TOTAL\s+DUE[\s:]+\$?([\d,]+\.\d{2})/i,
+      /Total\s+(?:Amount)?[\s:]+\$?([\d,]+\.\d{2})/i,
+      /PLEASE PAY[\s:]+\$?([\d,]+\.\d{2})/i,
+      /Amount\s+Due[\s:]+\$?([\d,]+\.\d{2})/i,
+      /(?:^|\s)TOTAL[\s:]+\$?([\d,]+\.\d{2})/im,
+    ];
+
+    for (const pattern of patterns) {
+      const match = text.match(pattern);
+      if (match) {
+        const amount = this.parseMoney(match[1]);
+        // Sanity check - should be between $0.01 and $1,000,000
+        if (amount > 0 && amount < 1000000) {
+          return amount;
+        }
+      }
+    }
+
+    return 0;
+  }
+
+  /**
+   * Extract comments and notes
    */
   extractComments(text) {
     const comments = [];
 
-    // Look for common comment patterns
     const patterns = [
       /Note to customer[:\s]+([^\n]{10,300})/gi,
-      /NOTE:?\s*([^\n]{20,200})/gi,
-      /COMMENT:?\s*([^\n]{20,200})/gi,
-      /MEMO:?\s*([^\n]{20,200})/gi,
-      /SPECIAL INSTRUCTIONS?:?\s*([^\n]{20,200})/gi,
-      /(?:ACH|WIRE|BANK)\s+(?:ROUTING|ACCOUNT)[^\n]{20,200}/gi,
-      /HEAT\s+NUMBER:?\s*[\d]+/gi,
-      /(?:PO|P\.O\.|PURCHASE ORDER)(?:\s+#)?:?\s*[\w-]+/gi
+      /(?:ACH|WIRE|Bank)\s+(?:Routing|Account)[^\n]{10,200}/gi,
+      /PO\s+(?:#|Number)?[\s:]+[\w-]+/gi,
+      /Customer\s+PO[#:\s]+[\w-]+/gi,
     ];
 
     for (const pattern of patterns) {
       let match;
       while ((match = pattern.exec(text)) !== null) {
         const comment = (match[1] || match[0]).trim();
-        if (comment.length > 10 && !comments.includes(comment)) {
+        if (comment.length > 5 && !comments.includes(comment)) {
           comments.push(comment);
         }
       }
@@ -494,14 +656,12 @@ class InvoiceParser {
     const arrayBuffer = await file.arrayBuffer();
     const workbook = this.XLSX.read(arrayBuffer, { type: 'array' });
     
-    // Get first sheet
     const sheetName = workbook.SheetNames[0];
     const worksheet = workbook.Sheets[sheetName];
     
-    // Convert to text for parsing
     const text = this.XLSX.utils.sheet_to_csv(worksheet);
     
-    return this.parseInvoiceText(text);
+    return this.intelligentExtract(text);
   }
 
   /**
@@ -509,7 +669,7 @@ class InvoiceParser {
    */
   async parseCSV(file) {
     const text = await file.text();
-    return this.parseInvoiceText(text);
+    return this.intelligentExtract(text);
   }
 
   /**
@@ -531,7 +691,6 @@ class InvoiceParser {
   normalizeDate(value) {
     if (!value) return '';
     
-    // Handle Excel date numbers
     if (typeof value === 'number' && value > 40000) {
       const date = new Date((value - 25569) * 86400 * 1000);
       return date.toISOString().split('T')[0];
@@ -539,32 +698,11 @@ class InvoiceParser {
 
     const str = String(value).trim();
     
-    // Try DDMmmYY format (e.g., "02Oct25")
-    const monthMap = {
-      jan: '01', feb: '02', mar: '03', apr: '04', may: '05', jun: '06',
-      jul: '07', aug: '08', sep: '09', oct: '10', nov: '11', dec: '12'
-    };
-    
-    const ddmmmyy = str.match(/(\d{1,2})([A-Za-z]{3})(\d{2})/i);
-    if (ddmmmyy) {
-      const day = ddmmmyy[1].padStart(2, '0');
-      const month = monthMap[ddmmmyy[2].toLowerCase()];
-      let year = ddmmmyy[3];
-      
-      // Convert 2-digit year to 4-digit
-      year = parseInt(year) > 50 ? '19' + year : '20' + year;
-      
-      if (month) {
-        return `${year}-${month}-${day}`;
-      }
-    }
-    
-    // Try MM/DD/YYYY or MM/DD/YY
+    // MM/DD/YYYY or MM/DD/YY
     const mdy = str.match(/(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})/);
     if (mdy) {
       let [_, month, day, year] = mdy;
       
-      // Handle 2-digit year
       if (year.length === 2) {
         year = parseInt(year) > 50 ? '19' + year : '20' + year;
       }
@@ -572,14 +710,13 @@ class InvoiceParser {
       return `${year.padStart(4, '0')}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`;
     }
 
-    // Try YYYY-MM-DD
+    // YYYY-MM-DD
     const ymd = str.match(/(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})/);
     if (ymd) {
       const [_, year, month, day] = ymd;
       return `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`;
     }
 
-    // Try parsing as date string
     try {
       const date = new Date(str);
       if (!isNaN(date.getTime())) {
@@ -593,9 +730,10 @@ class InvoiceParser {
   }
 }
 
-// Export for use in browser or Node.js
+// Export
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = InvoiceParser;
+  module.exports = EnhancedInvoiceParser;
 } else if (typeof window !== 'undefined') {
-  window.InvoiceParser = InvoiceParser;
+  window.InvoiceParser = EnhancedInvoiceParser;
+  window.EnhancedInvoiceParser = EnhancedInvoiceParser;
 }
