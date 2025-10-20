@@ -12,15 +12,22 @@ class EnhancedInvoiceParser {
   async init() {
     if (!this.pdfjsLib) {
       try {
+        // Load PDF.js as ESM module
         const pdfjs = await import('https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.5.136/pdf.min.mjs');
-        this.pdfjsLib = pdfjs;
+        
+        // FIXED: Access the correct export from ESM module
+        this.pdfjsLib = pdfjs.default || pdfjs;
+        
+        // Set worker
         if (this.pdfjsLib.GlobalWorkerOptions) {
           this.pdfjsLib.GlobalWorkerOptions.workerSrc = 
             'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.5.136/pdf.worker.min.mjs';
         }
-        console.log('✅ PDF.js loaded');
+        
+        console.log('✅ PDF.js loaded (getDocument exists:', typeof this.pdfjsLib.getDocument !== 'undefined', ')');
       } catch (error) {
-        console.error('Failed to load PDF.js:', error);
+        console.error('❌ Failed to load PDF.js:', error);
+        throw error;
       }
     }
 
@@ -44,22 +51,56 @@ class EnhancedInvoiceParser {
   }
 
   async parsePDF(file) {
-    if (!this.pdfjsLib) throw new Error('PDF.js not loaded');
-
-    const arrayBuffer = await file.arrayBuffer();
-    const pdf = await this.pdfjsLib.getDocument({ data: new Uint8Array(arrayBuffer) }).promise;
-    
-    let fullText = '';
-    for (let i = 1; i <= pdf.numPages; i++) {
-      const page = await pdf.getPage(i);
-      const textContent = await page.getTextContent();
-      fullText += textContent.items.map(item => item.str).join(' ') + '\n';
+    if (!this.pdfjsLib) {
+      throw new Error('PDF.js not loaded');
     }
 
-    console.log('📝 Extracted text length:', fullText.length);
-    console.log('📝 First 500 chars:', fullText.substring(0, 500));
+    try {
+      console.log('📖 Loading PDF...');
+      const arrayBuffer = await file.arrayBuffer();
+      const typedArray = new Uint8Array(arrayBuffer);
+      
+      console.log('📊 PDF size:', typedArray.length, 'bytes');
+      
+      // Load the PDF document
+      const loadingTask = this.pdfjsLib.getDocument({ data: typedArray });
+      const pdf = await loadingTask.promise;
+      
+      console.log('📄 PDF loaded, pages:', pdf.numPages);
+      
+      let fullText = '';
+      
+      // Extract text from each page
+      for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
+        console.log(`📃 Processing page ${pageNum}/${pdf.numPages}...`);
+        
+        const page = await pdf.getPage(pageNum);
+        const textContent = await page.getTextContent();
+        
+        console.log(`  - Text items on page ${pageNum}:`, textContent.items.length);
+        
+        // Join text items with space
+        const pageText = textContent.items
+          .map(item => item.str)
+          .join(' ');
+        
+        fullText += pageText + '\n\n';
+      }
 
-    return this.intelligentExtract(fullText);
+      console.log('✅ Extracted text length:', fullText.length);
+      console.log('📝 First 500 chars:', fullText.substring(0, 500));
+      console.log('📝 Last 200 chars:', fullText.substring(Math.max(0, fullText.length - 200)));
+
+      if (fullText.length < 10) {
+        throw new Error('PDF text extraction failed - extracted less than 10 characters');
+      }
+
+      return this.intelligentExtract(fullText);
+      
+    } catch (error) {
+      console.error('❌ PDF parsing error:', error);
+      throw error;
+    }
   }
 
   intelligentExtract(text) {
