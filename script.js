@@ -465,6 +465,23 @@ drop.addEventListener('drop', async (e) => {
         } else {
           logger.warn(`Item ${i} is file kind but getAsFile() returned null`);
         }
+      } else if (item.type === 'attachment' || item.kind === 'string') {
+        // Some email clients (like certain versions of Outlook or webmail)
+        // send files as kind='string' with type='attachment'
+        // Try to extract as file anyway
+        logger.debug(`Attempting to extract file from string/attachment item ${i}`);
+        const extractedFile = item.getAsFile();
+        if (extractedFile) {
+          logger.info(`Successfully extracted file from attachment/string via items[${i}]:`, extractedFile.name, extractedFile.type, `${(extractedFile.size / 1024).toFixed(2)}KB`);
+          file = extractedFile;
+          break;
+        } else {
+          // Try to get string data to see what's available
+          logger.debug(`getAsFile() returned null for attachment, trying getAsString()`);
+          item.getAsString((data) => {
+            logger.debug(`String data from item ${i}:`, data.substring(0, 200));
+          });
+        }
       }
     }
   }
