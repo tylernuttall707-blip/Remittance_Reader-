@@ -475,12 +475,43 @@ drop.addEventListener('drop', async (e) => {
           logger.info(`Successfully extracted file from attachment/string via items[${i}]:`, extractedFile.name, extractedFile.type, `${(extractedFile.size / 1024).toFixed(2)}KB`);
           file = extractedFile;
           break;
-        } else {
-          // Try to get string data to see what's available
-          logger.debug(`getAsFile() returned null for attachment, trying getAsString()`);
-          item.getAsString((data) => {
-            logger.debug(`String data from item ${i}:`, data.substring(0, 200));
-          });
+        }
+
+        // Try webkitGetAsEntry for FileSystemHandle API (modern browsers)
+        if (typeof item.webkitGetAsEntry === 'function') {
+          logger.debug(`Trying webkitGetAsEntry() for item ${i}`);
+          const entry = item.webkitGetAsEntry();
+          if (entry && entry.isFile) {
+            logger.debug(`Got FileSystemEntry: ${entry.name}`);
+            // Convert FileSystemEntry to File
+            await new Promise((resolve) => {
+              entry.file((entryFile) => {
+                logger.info(`Successfully extracted file via webkitGetAsEntry:`, entryFile.name, entryFile.type, `${(entryFile.size / 1024).toFixed(2)}KB`);
+                file = entryFile;
+                resolve();
+              }, (error) => {
+                logger.error(`Failed to get file from entry:`, error);
+                resolve();
+              });
+            });
+            if (file) break;
+          }
+        }
+
+        // Try getAsFileSystemHandle (newer API)
+        if (!file && typeof item.getAsFileSystemHandle === 'function') {
+          try {
+            logger.debug(`Trying getAsFileSystemHandle() for item ${i}`);
+            const handle = await item.getAsFileSystemHandle();
+            if (handle && handle.kind === 'file') {
+              logger.debug(`Got FileSystemFileHandle: ${handle.name}`);
+              file = await handle.getFile();
+              logger.info(`Successfully extracted file via getAsFileSystemHandle:`, file.name, file.type, `${(file.size / 1024).toFixed(2)}KB`);
+              break;
+            }
+          } catch (err) {
+            logger.debug(`getAsFileSystemHandle failed:`, err.message);
+          }
         }
       }
     }
@@ -502,6 +533,21 @@ drop.addEventListener('drop', async (e) => {
     if (types.includes('text/uri-list')) {
       const uri = e.dataTransfer.getData('text/uri-list');
       logger.debug('Found URI:', uri);
+
+      // Try to fetch the file from the URI (if it's a blob or data URL)
+      if (uri && (uri.startsWith('blob:') || uri.startsWith('data:'))) {
+        try {
+          logger.debug('Attempting to fetch file from URI');
+          const response = await fetch(uri);
+          const blob = await response.blob();
+          // Try to extract filename from content-disposition or use a default
+          const filename = 'dropped-file';
+          file = new File([blob], filename, { type: blob.type });
+          logger.info('Successfully created file from URI:', file.name, file.type, `${(file.size / 1024).toFixed(2)}KB`);
+        } catch (err) {
+          logger.error('Failed to fetch file from URI:', err);
+        }
+      }
     }
   }
 
