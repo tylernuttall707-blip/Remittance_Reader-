@@ -360,22 +360,24 @@ pick.onclick = () => fileInput.click();
 ['dragenter', 'dragover'].forEach(ev =>
   drop.addEventListener(ev, e => {
     e.preventDefault();
+    e.stopPropagation();
     drop.style.borderColor = '#0077c5';
     drop.style.background = '#e6f3fb';
   })
 );
 
-['dragleave', 'drop'].forEach(ev =>
-  drop.addEventListener(ev, e => {
-    e.preventDefault();
-    drop.style.borderColor = '#c1c4c8';
-    drop.style.background = '#f7f8fa';
-  })
-);
+drop.addEventListener('dragleave', e => {
+  e.preventDefault();
+  e.stopPropagation();
+  drop.style.borderColor = '#c1c4c8';
+  drop.style.background = '#f7f8fa';
+});
 
 drop.addEventListener('drop', (e) => {
   e.preventDefault();
   e.stopPropagation();
+  drop.style.borderColor = '#c1c4c8';
+  drop.style.background = '#f7f8fa';
   const f = e.dataTransfer?.files?.[0];
   if (f) handleFile(f);
 });
