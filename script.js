@@ -443,23 +443,80 @@ drop.addEventListener('drop', async (e) => {
   e.preventDefault();
   e.stopPropagation();
 
-  // Try to get file from dataTransfer.items first (works better with email drag-drop)
-  if (e.dataTransfer?.items?.length > 0) {
-    const item = e.dataTransfer.items[0];
+  logger.debug('Drop event triggered');
 
-    // Check if it's a file
-    if (item.kind === 'file') {
-      const file = item.getAsFile();
-      if (file) {
-        handleFile(file);
-        return;
+  let file = null;
+
+  // Strategy 1: Try dataTransfer.items (preferred for email clients)
+  if (e.dataTransfer?.items?.length > 0) {
+    logger.debug(`Found ${e.dataTransfer.items.length} items in dataTransfer.items`);
+
+    // Loop through items to find a file (email clients might have multiple items)
+    for (let i = 0; i < e.dataTransfer.items.length; i++) {
+      const item = e.dataTransfer.items[i];
+      logger.debug(`Item ${i}: kind=${item.kind}, type=${item.type}`);
+
+      if (item.kind === 'file') {
+        const extractedFile = item.getAsFile();
+        if (extractedFile) {
+          logger.info(`Successfully extracted file via items[${i}]:`, extractedFile.name, extractedFile.type, `${(extractedFile.size / 1024).toFixed(2)}KB`);
+          file = extractedFile;
+          break;
+        } else {
+          logger.warn(`Item ${i} is file kind but getAsFile() returned null`);
+        }
       }
     }
   }
 
-  // Fallback to dataTransfer.files (traditional file drag-drop)
-  const f = e.dataTransfer?.files?.[0];
-  if (f) handleFile(f);
+  // Strategy 2: Try dataTransfer.files (traditional file system drag-drop)
+  if (!file && e.dataTransfer?.files?.length > 0) {
+    logger.debug(`Found ${e.dataTransfer.files.length} files in dataTransfer.files`);
+    file = e.dataTransfer.files[0];
+    logger.info('Extracted file via dataTransfer.files:', file.name, file.type, `${(file.size / 1024).toFixed(2)}KB`);
+  }
+
+  // Strategy 3: Check for URL/text that might be a file reference
+  if (!file) {
+    const types = e.dataTransfer?.types || [];
+    logger.debug('Available data types:', types.join(', '));
+
+    // Some email clients provide file URLs or other metadata
+    if (types.includes('text/uri-list')) {
+      const uri = e.dataTransfer.getData('text/uri-list');
+      logger.debug('Found URI:', uri);
+    }
+  }
+
+  if (file) {
+    // Handle cases where file has no extension but has a type
+    if (!file.name.includes('.') && file.type) {
+      logger.warn('File has no extension, type is:', file.type);
+
+      // Try to infer extension from MIME type
+      const typeMap = {
+        'application/pdf': '.pdf',
+        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': '.xlsx',
+        'application/vnd.ms-excel': '.xls',
+        'text/csv': '.csv',
+        'image/png': '.png',
+        'image/jpeg': '.jpg'
+      };
+
+      if (typeMap[file.type]) {
+        logger.info(`Inferring extension ${typeMap[file.type]} from MIME type ${file.type}`);
+        // Create a new File object with corrected name
+        const correctedName = file.name + typeMap[file.type];
+        file = new File([file], correctedName, { type: file.type });
+        logger.info('Created new file with name:', file.name);
+      }
+    }
+
+    handleFile(file);
+  } else {
+    logger.error('No file found in drop event');
+    toast('Could not read the dropped file. Try using the file picker instead.', 'error');
+  }
 });
 
 fileInput.onchange = (e) => {
