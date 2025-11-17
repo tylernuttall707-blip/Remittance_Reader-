@@ -195,6 +195,18 @@ export function showError(error, toastElement) {
 export function validateFile(file) {
   const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
   const ALLOWED_EXTENSIONS = ['pdf', 'xlsx', 'xls', 'csv', 'png', 'jpg', 'jpeg'];
+  const ALLOWED_MIME_TYPES = [
+    'application/pdf',
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    'application/vnd.ms-excel',
+    'text/csv',
+    'image/png',
+    'image/jpeg',
+    'image/jpg',
+    'application/octet-stream' // Generic type sometimes used by email clients
+  ];
+
+  logger.debug('Validating file:', file.name, 'type:', file.type, 'size:', `${(file.size / 1024).toFixed(2)}KB`);
 
   // Check file size
   if (file.size > MAX_FILE_SIZE) {
@@ -209,18 +221,39 @@ export function validateFile(file) {
     );
   }
 
-  // Check file extension
-  const extension = file.name.split('.').pop().toLowerCase();
-  if (!ALLOWED_EXTENSIONS.includes(extension)) {
+  // Check file extension (if present)
+  const hasExtension = file.name.includes('.');
+  let extensionValid = false;
+
+  if (hasExtension) {
+    const extension = file.name.split('.').pop().toLowerCase();
+    extensionValid = ALLOWED_EXTENSIONS.includes(extension);
+    logger.debug('File extension:', extension, 'valid:', extensionValid);
+  } else {
+    logger.warn('File has no extension:', file.name);
+  }
+
+  // Check MIME type as fallback (important for email drag-drop)
+  const mimeValid = file.type && ALLOWED_MIME_TYPES.includes(file.type);
+  logger.debug('MIME type:', file.type, 'valid:', mimeValid);
+
+  // Accept if either extension OR MIME type is valid
+  if (!extensionValid && !mimeValid) {
+    const extension = hasExtension ? file.name.split('.').pop().toLowerCase() : 'unknown';
     throw new UserFriendlyError(
-      `File type ".${extension}" is not supported`,
-      `Unsupported file extension: ${extension}`,
+      `File type "${extension}" is not supported`,
+      `Unsupported file - extension: ${extension}, MIME: ${file.type}`,
       [
         'Supported formats: ' + ALLOWED_EXTENSIONS.join(', ').toUpperCase(),
         'Convert your file to a supported format',
-        'Double-check the file extension matches the actual file type'
+        'Make sure the file is a valid PDF, Excel, or CSV file'
       ]
     );
+  }
+
+  // Log if we're accepting based on MIME type alone
+  if (!extensionValid && mimeValid) {
+    logger.info('File accepted based on MIME type despite missing/invalid extension');
   }
 
   // Sanitize filename to prevent potential issues
