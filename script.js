@@ -440,6 +440,8 @@ pick.onclick = () => fileInput.click();
 );
 
 drop.addEventListener('drop', (e) => {
+  e.preventDefault();
+  e.stopPropagation();
   const f = e.dataTransfer?.files?.[0];
   if (f) handleFile(f);
 });
