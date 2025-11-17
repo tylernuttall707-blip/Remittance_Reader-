@@ -465,20 +465,40 @@ drop.addEventListener('drop', async (e) => {
         } else {
           logger.warn(`Item ${i} is file kind but getAsFile() returned null`);
         }
-      } else if (item.type === 'attachment' || item.kind === 'string') {
-        // Some email clients (like certain versions of Outlook or webmail)
-        // send files as kind='string' with type='attachment'
-        // Try to extract as file anyway
-        logger.debug(`Attempting to extract file from string/attachment item ${i}`);
+      } else if (item.kind === 'string') {
+        // For kind='string' items, we need to use getAsString() to retrieve the data
+        logger.debug(`Attempting to extract data from string item ${i} with type=${item.type}`);
+
+        // Try getAsFile first - some browsers may still support this
         const extractedFile = item.getAsFile();
         if (extractedFile) {
-          logger.info(`Successfully extracted file from attachment/string via items[${i}]:`, extractedFile.name, extractedFile.type, `${(extractedFile.size / 1024).toFixed(2)}KB`);
+          logger.info(`Successfully extracted file from string via getAsFile() at items[${i}]:`, extractedFile.name, extractedFile.type, `${(extractedFile.size / 1024).toFixed(2)}KB`);
           file = extractedFile;
           break;
         }
 
+        // Use getAsString to retrieve the actual string data
+        await new Promise((resolve) => {
+          item.getAsString((data) => {
+            logger.debug(`String data from item ${i}:`, data.substring(0, 100));
+
+            // Check if it's a blob URL or data URL
+            if (data && (data.startsWith('blob:') || data.startsWith('data:'))) {
+              logger.debug(`Found URL in string data: ${data.substring(0, 50)}...`);
+              // We'll handle this in the URI strategy below
+              resolve();
+            } else if (data) {
+              logger.warn(`Got string data but it's not a recognized URL format:`, data.substring(0, 100));
+              resolve();
+            } else {
+              logger.warn(`getAsString returned empty data for item ${i}`);
+              resolve();
+            }
+          });
+        });
+
         // Try webkitGetAsEntry for FileSystemHandle API (modern browsers)
-        if (typeof item.webkitGetAsEntry === 'function') {
+        if (!file && typeof item.webkitGetAsEntry === 'function') {
           logger.debug(`Trying webkitGetAsEntry() for item ${i}`);
           const entry = item.webkitGetAsEntry();
           if (entry && entry.isFile) {
@@ -529,24 +549,84 @@ drop.addEventListener('drop', async (e) => {
     const types = e.dataTransfer?.types || [];
     logger.debug('Available data types:', types.join(', '));
 
-    // Some email clients provide file URLs or other metadata
-    if (types.includes('text/uri-list')) {
-      const uri = e.dataTransfer.getData('text/uri-list');
-      logger.debug('Found URI:', uri);
+    // Try each data type
+    for (const type of types) {
+      if (file) break;
 
-      // Try to fetch the file from the URI (if it's a blob or data URL)
-      if (uri && (uri.startsWith('blob:') || uri.startsWith('data:'))) {
-        try {
+      try {
+        const data = e.dataTransfer.getData(type);
+        if (!data) {
+          logger.debug(`No data available for type: ${type}`);
+          continue;
+        }
+
+        logger.debug(`Got data for type '${type}':`, data.substring(0, 100));
+
+        // Handle URI lists
+        if (type === 'text/uri-list' || data.startsWith('blob:') || data.startsWith('data:')) {
           logger.debug('Attempting to fetch file from URI');
-          const response = await fetch(uri);
+          const response = await fetch(data);
           const blob = await response.blob();
+
           // Try to extract filename from content-disposition or use a default
-          const filename = 'dropped-file';
+          const contentDisposition = response.headers.get('content-disposition');
+          let filename = 'dropped-file';
+          if (contentDisposition) {
+            const filenameMatch = contentDisposition.match(/filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/);
+            if (filenameMatch && filenameMatch[1]) {
+              filename = filenameMatch[1].replace(/['"]/g, '');
+            }
+          }
+
+          // If blob has a type, try to add appropriate extension
+          if (!filename.includes('.') && blob.type) {
+            const ext = blob.type.split('/')[1];
+            if (ext) filename += '.' + ext;
+          }
+
           file = new File([blob], filename, { type: blob.type });
           logger.info('Successfully created file from URI:', file.name, file.type, `${(file.size / 1024).toFixed(2)}KB`);
-        } catch (err) {
-          logger.error('Failed to fetch file from URI:', err);
+        } else if (type === 'attachment' || type.includes('file')) {
+          // For 'attachment' type, the data might be base64 encoded file data
+          logger.debug('Attempting to decode attachment data');
+
+          // Try to parse as JSON (some clients send metadata)
+          try {
+            const jsonData = JSON.parse(data);
+            logger.debug('Attachment data is JSON:', jsonData);
+
+            // Check if it contains file information
+            if (jsonData.data || jsonData.content) {
+              // Decode base64 data
+              const base64Data = jsonData.data || jsonData.content;
+              const binaryString = atob(base64Data);
+              const bytes = new Uint8Array(binaryString.length);
+              for (let i = 0; i < binaryString.length; i++) {
+                bytes[i] = binaryString.charCodeAt(i);
+              }
+              const blob = new Blob([bytes], { type: jsonData.type || 'application/octet-stream' });
+              file = new File([blob], jsonData.name || 'dropped-file', { type: jsonData.type || 'application/octet-stream' });
+              logger.info('Successfully decoded attachment from JSON:', file.name, file.type, `${(file.size / 1024).toFixed(2)}KB`);
+            }
+          } catch (jsonErr) {
+            // Not JSON, might be raw base64 or other format
+            logger.debug('Attachment data is not JSON, trying as base64');
+            try {
+              const binaryString = atob(data);
+              const bytes = new Uint8Array(binaryString.length);
+              for (let i = 0; i < binaryString.length; i++) {
+                bytes[i] = binaryString.charCodeAt(i);
+              }
+              const blob = new Blob([bytes]);
+              file = new File([blob], 'dropped-file', { type: 'application/octet-stream' });
+              logger.info('Successfully decoded attachment from base64:', file.name, `${(file.size / 1024).toFixed(2)}KB`);
+            } catch (base64Err) {
+              logger.debug('Failed to decode as base64:', base64Err.message);
+            }
+          }
         }
+      } catch (err) {
+        logger.debug(`Failed to process type '${type}':`, err.message);
       }
     }
   }
@@ -578,7 +658,25 @@ drop.addEventListener('drop', async (e) => {
     handleFile(file);
   } else {
     logger.error('No file found in drop event');
-    toast('Could not read the dropped file. Try using the file picker instead.', 'error');
+
+    // Provide specific guidance based on what we detected
+    let errorMsg = 'Could not read the dropped file. ';
+    let suggestion = '';
+
+    if (e.dataTransfer?.items?.length > 0) {
+      const firstItem = e.dataTransfer.items[0];
+      if (firstItem.kind === 'string' && firstItem.type === 'attachment') {
+        errorMsg = 'This file cannot be dragged from your email client due to browser security restrictions. ';
+        suggestion = 'Please download the file first, then drag it here or use the file picker button.';
+      } else {
+        suggestion = 'Try downloading the file first, then use the file picker button to select it.';
+      }
+    } else {
+      suggestion = 'Try using the file picker button instead.';
+    }
+
+    toast(errorMsg + suggestion, 'error', 6000);
+    logger.info('Suggestion:', suggestion);
   }
 });
 
