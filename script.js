@@ -439,9 +439,25 @@ pick.onclick = () => fileInput.click();
   })
 );
 
-drop.addEventListener('drop', (e) => {
+drop.addEventListener('drop', async (e) => {
   e.preventDefault();
   e.stopPropagation();
+
+  // Try to get file from dataTransfer.items first (works better with email drag-drop)
+  if (e.dataTransfer?.items?.length > 0) {
+    const item = e.dataTransfer.items[0];
+
+    // Check if it's a file
+    if (item.kind === 'file') {
+      const file = item.getAsFile();
+      if (file) {
+        handleFile(file);
+        return;
+      }
+    }
+  }
+
+  // Fallback to dataTransfer.files (traditional file drag-drop)
   const f = e.dataTransfer?.files?.[0];
   if (f) handleFile(f);
 });
