@@ -1,105 +1,19 @@
-// PDF.js configuration - Load as module
-const PDF_WORKER_SRC = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.5.136/pdf.worker.min.mjs';
+// Import modules
+import RemittanceParser from './remittance-parser.js';
+import logger from './logger.js';
+import { showError, validateFile } from './error-handler.js';
+import ui from './ui-utils.js';
+import dataPersistence, { saveRemittanceState, loadRemittanceState, saveRemittanceRecord } from './data-persistence.js';
 
-// Global variable to hold PDF.js library
-let pdfjsLib = null;
-
-// Load PDF.js library
-async function initPDFJS() {
-  if (pdfjsLib) return pdfjsLib;
-  
-  try {
-    const pdfjs = await import('https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.5.136/pdf.min.mjs');
-    pdfjsLib = pdfjs;
-    
-    // Set worker source
-    if (pdfjsLib.GlobalWorkerOptions) {
-      pdfjsLib.GlobalWorkerOptions.workerSrc = PDF_WORKER_SRC;
-    }
-    
-    console.log('PDF.js loaded successfully');
-    return pdfjsLib;
-  } catch (error) {
-    console.error('Failed to load PDF.js:', error);
-    throw new Error('Failed to load PDF.js library');
-  }
-}
-
-// Helper function to wait for XLSX library
-async function waitForXLSX(maxWaitMs = 10000) {
-  // Check if already loaded
-  if (typeof XLSX !== 'undefined') {
-    console.log('✅ XLSX already available');
-    return XLSX;
-  }
-  
-  console.log('⏳ Waiting for XLSX library to load...');
-  const startTime = Date.now();
-  let lastStatus = '';
-  
-  while (typeof XLSX === 'undefined' && (Date.now() - startTime) < maxWaitMs) {
-    await new Promise(resolve => setTimeout(resolve, 100));
-    
-    // Check library status
-    if (window.libraryStatus) {
-      const status = window.libraryStatus.xlsx ? 'loaded' : 'loading';
-      const error = window.libraryStatus.xlsxError ? 'ERROR' : '';
-      const currentStatus = `${status} ${error}`.trim();
-      
-      if (currentStatus !== lastStatus) {
-        console.log(`XLSX status: ${currentStatus}`);
-        lastStatus = currentStatus;
-      }
-      
-      // If there was a load error, try fallback
-      if (window.libraryStatus.xlsxError) {
-        console.log('⚠️ CDN failed, trying fallback...');
-        try {
-          await loadXLSXFallback();
-        } catch (e) {
-          console.error('Fallback also failed:', e);
-        }
-      }
-    }
-  }
-  
-  if (typeof XLSX !== 'undefined') {
-    console.log('✅ XLSX library loaded successfully');
-    return XLSX;
-  }
-  
-  console.error('❌ XLSX library not available after waiting');
-  console.error('Check browser console for network errors');
-  return null;
-}
-
-// Fallback: Try to load XLSX from alternative CDN
-async function loadXLSXFallback() {
-  return new Promise((resolve, reject) => {
-    if (typeof XLSX !== 'undefined') {
-      resolve(XLSX);
-      return;
-    }
-    
-    console.log('Trying fallback CDN: unpkg.com');
-    const script = document.createElement('script');
-    script.src = 'https://unpkg.com/xlsx@0.18.5/dist/xlsx.full.min.js';
-    script.onload = () => {
-      console.log('✅ Fallback XLSX loaded from unpkg');
-      resolve(XLSX);
-    };
-    script.onerror = () => {
-      console.error('❌ Fallback CDN also failed');
-      reject(new Error('All CDNs failed'));
-    };
-    document.head.appendChild(script);
-  });
-}
+// Make logger and ui available globally for parser
+window.logger = logger;
+window.ui = ui;
 
 // Helper functions
 const $ = (q) => document.querySelector(q);
 const rowsEl = $('#rows');
 const statusEl = $('#status');
+const toastEl = $('#toast');
 
 const fmtMoney = (n, cur = ($('#currency').value || 'USD')) => {
   try {
@@ -119,11 +33,8 @@ const escapeHTML = (str) =>
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;');
 
-const toast = (msg) => {
-  const t = $('#toast');
-  t.textContent = msg;
-  t.classList.remove('hidden');
-  setTimeout(() => t.classList.add('hidden'), 3000);
+const toast = (msg, type = 'info', duration = 3000) => {
+  ui.toast(msg, type, duration);
 };
 
 const statusDefault = 'Review before you save.';
@@ -146,35 +57,27 @@ function resetState() {
 }
 
 function render() {
-  console.log('=== RENDER CALLED ===');
-  console.log('Current state:', state);
-  
+  logger.debug('Rendering state with', state.invoices.length, 'invoices');
+
   const payerInput = $('#payer');
   const paydateInput = $('#paydate');
   const amountInput = $('#amountReceived');
-  
-  console.log('Payer input element:', payerInput);
-  console.log('Setting payer to:', state.payer);
-  
+
   payerInput.value = state.payer || '';
-  
+
   if (state.date) {
-    console.log('Setting date to:', state.date);
     paydateInput.value = state.date;
   }
-  
+
   const formattedAmount = state.amountReceived ? fmtMoney(state.amountReceived) : '';
-  console.log('Setting amount to:', formattedAmount);
   amountInput.value = formattedAmount;
-  
+
   $('#displayAmount').textContent = state.amountReceived ? fmtMoney(state.amountReceived) : '$0.00';
   $('#currencyDisplay').textContent = $('#currency').value || 'USD';
 
   rowsEl.innerHTML = '';
   let appliedSum = 0;
-  
-  console.log('Rendering', state.invoices.length, 'invoice rows');
-  
+
   state.invoices.forEach((row, idx) => {
     const appliedVal = Number(row.applied || 0);
     appliedSum += appliedVal;
@@ -204,17 +107,17 @@ function render() {
         <input data-idx="${idx}" class="amt amount-input" value="${appliedVal ? fmtMoney(appliedVal) : ''}"/>
       </td>`;
     rowsEl.appendChild(tr);
-    console.log('Added row for invoice:', row.invoice);
   });
 
   $('#appliedTotal').textContent = fmtMoney(appliedSum);
   const credit = Math.max(0, (state.amountReceived || 0) - appliedSum);
   $('#applyTotal').textContent = fmtMoney(appliedSum);
   $('#creditTotal').textContent = fmtMoney(credit);
-  
-  console.log('=== RENDER COMPLETE ===');
-  console.log('Applied total:', appliedSum);
-  console.log('Credit:', credit);
+
+  // Auto-save state to localStorage
+  saveRemittanceState(state);
+
+  logger.debug('Render complete - Applied:', appliedSum, 'Credit:', credit);
 }
 
 function upsertInvoice(partial) {
@@ -274,644 +177,63 @@ function normalizeDate(v) {
   return '';
 }
 
+// Global updateStatus function for parser to call
+window.updateStatus = function(msg) {
+  updateStatus(msg);
+};
+
 function updateStatus(msg) {
   statusEl.textContent = msg || statusDefault;
 }
 
-// ============================================================================
-// REMITTANCE PARSER CLASS
-// ============================================================================
-
-class RemittanceParser {
-  constructor() {
-    this.pdfjsLib = null;
-    this.XLSX = null;
+// Data validation functions
+function validateAmount(amount) {
+  const num = parseMoney(amount);
+  if (isNaN(num) || num < 0) {
+    return { valid: false, message: 'Amount must be a positive number' };
   }
-
-  async init() {
-    // Initialize PDF.js
-    if (!this.pdfjsLib) {
-      this.pdfjsLib = await initPDFJS();
-    }
-    
-    // Wait for XLSX library to load
-    if (!this.XLSX) {
-      this.XLSX = await waitForXLSX(5000);
-    }
+  if (num > 1000000000) { // 1 billion sanity check
+    return { valid: false, message: 'Amount seems unreasonably large. Please verify.' };
   }
-
-  async parseFile(file) {
-    await this.init();
-    const ext = this.getExtension(file.name);
-    const fileType = this.detectFileType(file, ext);
-    console.log(`Parsing ${file.name} as ${fileType}`);
-
-    switch (fileType) {
-      case 'pdf':
-        return await this.parsePDF(file);
-      case 'xlsx':
-        return await this.parseXLSX(file);
-      case 'csv':
-        return await this.parseCSV(file);
-      default:
-        throw new Error(`Unsupported file type: ${fileType}`);
-    }
-  }
-
-  detectFileType(file, ext) {
-    const mime = (file.type || '').toLowerCase();
-    if (ext === 'pdf' || mime === 'application/pdf') return 'pdf';
-    if (['xlsx', 'xls'].includes(ext) || mime.includes('spreadsheet') || mime.includes('excel')) return 'xlsx';
-    if (ext === 'csv' || mime === 'text/csv') return 'csv';
-    throw new Error('Unknown file type');
-  }
-
-  getExtension(filename) {
-    return (filename || '').split('.').pop().toLowerCase();
-  }
-
-  async parsePDF(file) {
-    if (!this.pdfjsLib) {
-      throw new Error('PDF.js library not loaded');
-    }
-
-    const arrayBuffer = await file.arrayBuffer();
-    const data = new Uint8Array(arrayBuffer);
-    const pdf = await this.pdfjsLib.getDocument({ data }).promise;
-    let fullText = '';
-
-    console.log('PDF has', pdf.numPages, 'pages');
-
-    for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
-      const page = await pdf.getPage(pageNum);
-      const textContent = await page.getTextContent();
-      const pageText = textContent.items.map(item => item.str).join(' ');
-      console.log(`Page ${pageNum} text (first 500 chars):`, pageText.substring(0, 500));
-      fullText += pageText + '\n';
-    }
-
-    console.log('Full extracted text (first 1000 chars):', fullText.substring(0, 1000));
-    
-    // Check if we got any meaningful text
-    const hasText = fullText.trim().length > 50;
-    console.log('Has text:', hasText, '(length:', fullText.trim().length, ')');
-    
-    // If no text found, this is likely an image-based PDF - use OCR
-    if (!hasText) {
-      console.log('No text found in PDF - attempting OCR...');
-      try {
-        fullText = await this.performOCR(pdf);
-        console.log('OCR completed. Extracted text (first 1000 chars):', fullText.substring(0, 1000));
-      } catch (ocrError) {
-        console.error('OCR failed:', ocrError);
-        throw new Error('This appears to be a scanned/image PDF. OCR extraction failed: ' + ocrError.message);
-      }
-    }
-
-    console.log('Text contains "Turn 5":', fullText.includes('Turn 5'));
-    console.log('Text contains "turn 5" (lowercase):', fullText.toLowerCase().includes('turn 5'));
-    console.log('Text contains "Artec":', fullText.includes('Artec'));
-    console.log('Text contains "ARTEC":', fullText.includes('ARTEC'));
-
-    const format = this.detectPDFFormat(fullText);
-    console.log(`Detected PDF format: ${format}`);
-
-    switch (format) {
-      case 'meyer':
-        return this.parseMeyerPDF(fullText);
-      case 'turn5':
-        return this.parseTurn5PDF(fullText);
-      case 'orw':
-        return this.parseORWPDF(fullText);
-      default:
-        return this.parseGenericPDF(fullText);
-    }
-  }
-
-  /**
-   * Perform OCR on PDF pages using Tesseract.js
-   */
-  async performOCR(pdf) {
-    if (typeof Tesseract === 'undefined') {
-      throw new Error('Tesseract.js library not loaded');
-    }
-
-    let fullText = '';
-    
-    // Update status to show OCR progress
-    if (typeof updateStatus === 'function') {
-      updateStatus('Scanning document with OCR...');
-    }
-
-    for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
-      console.log(`Running OCR on page ${pageNum}/${pdf.numPages}...`);
-      
-      if (typeof updateStatus === 'function') {
-        updateStatus(`OCR scanning page ${pageNum} of ${pdf.numPages}...`);
-      }
-      
-      const page = await pdf.getPage(pageNum);
-      
-      // Render page to canvas
-      const viewport = page.getViewport({ scale: 2.0 }); // Higher scale for better OCR
-      const canvas = document.createElement('canvas');
-      const context = canvas.getContext('2d');
-      canvas.width = viewport.width;
-      canvas.height = viewport.height;
-      
-      await page.render({
-        canvasContext: context,
-        viewport: viewport
-      }).promise;
-      
-      // Run OCR on canvas
-      const { data: { text } } = await Tesseract.recognize(
-        canvas,
-        'eng',
-        {
-          logger: m => console.log('OCR progress:', m)
-        }
-      );
-      
-      console.log(`Page ${pageNum} OCR result (first 300 chars):`, text.substring(0, 300));
-      fullText += text + '\n';
-    }
-
-    return fullText;
-  }
-
-  detectPDFFormat(text) {
-    const lower = text.toLowerCase();
-    if (lower.includes('meyer') && lower.includes('distributing')) return 'meyer';
-    if (lower.includes('turn 5')) return 'turn5';
-    if (lower.includes('orw usa')) return 'orw';
-    return 'generic';
-  }
-
-  parseMeyerPDF(text) {
-    const result = {
-      paymentNumber: '',
-      paymentDate: '',
-      vendor: 'Meyer Distributing',
-      customer: '',
-      invoices: []
-    };
-
-    const paymentMatch = text.match(/EFT\d{12}/);
-    if (paymentMatch) result.paymentNumber = paymentMatch[0];
-
-    const dateMatch = text.match(/Payment Date[\s\S]*?(\d{2}\/\d{2}\/\d{4})/);
-    if (dateMatch) result.paymentDate = this.normalizeDate(dateMatch[1]);
-
-    const customerMatch = text.match(/Vendor Name\s+([A-Za-z0-9\s&,.'-]+?)(?=\s+Vendor ID|Payment Number)/);
-    if (customerMatch) result.customer = customerMatch[1].trim();
-
-    const invoicePattern = /(\d{5})\s+(\d{2}\/\d{2}\/\d{4})\s+(?:.*?)\s+\$?([\d,]+\.\d{2})\s+\$?([\d,]+\.\d{2})\s+\$?([\d,]+\.\d{2})/g;
-    let match;
-
-    while ((match = invoicePattern.exec(text)) !== null) {
-      const [_, invoiceNum, invoiceDate, amount, discount, paidAmount] = match;
-      const notePattern = new RegExp(`${invoiceNum}[\\s\\S]{0,200}?short pay.*?\\$([\\.\\d,]+).*?co-?op`, 'i');
-      const noteMatch = text.match(notePattern);
-
-      const invoice = {
-        invoice: invoiceNum,
-        date: this.normalizeDate(invoiceDate),
-        amount: this.parseMoney(amount),
-        discount: this.parseMoney(discount),
-        paidAmount: this.parseMoney(paidAmount),
-        originalAmount: null,
-        coopDiscount: null,
-        notes: null
-      };
-
-      if (noteMatch) {
-        invoice.coopDiscount = this.parseMoney(noteMatch[1]);
-        invoice.originalAmount = invoice.amount + invoice.coopDiscount;
-        invoice.notes = noteMatch[0].trim();
-      } else {
-        invoice.originalAmount = invoice.amount;
-      }
-
-      result.invoices.push(invoice);
-    }
-
-    return result;
-  }
-
-  parseTurn5PDF(text) {
-    const result = {
-      paymentNumber: '',
-      paymentDate: '',
-      vendor: 'Turn 5, Inc.',
-      customer: '',
-      invoices: []
-    };
-
-    const checkMatch = text.match(/Check Number\s+(\d+)/i);
-    if (checkMatch) result.paymentNumber = checkMatch[1];
-
-    const dateMatch = text.match(/Date\s+(\d{2}\/\d{2}\/\d{4})/);
-    if (dateMatch) result.paymentDate = this.normalizeDate(dateMatch[1]);
-
-    const customerMatch = text.match(/Vendor\s+([A-Za-z0-9\s&,.'-]+?)(?=\s+Vendor ID)/);
-    if (customerMatch) result.customer = customerMatch[1].trim();
-
-    const invoicePattern = /(\d{5})\s+(\d{2}\/\d{2}\/\d{4})\s+\$?([\d,]+\.\d{2})\s+\$?([\d,]+\.\d{2})\s+\$?([\d,]+\.\d{2})/g;
-    let match;
-
-    while ((match = invoicePattern.exec(text)) !== null) {
-      const [_, invoiceNum, invoiceDate, amount, discount, paidAmount] = match;
-      result.invoices.push({
-        invoice: invoiceNum,
-        date: this.normalizeDate(invoiceDate),
-        amount: this.parseMoney(amount),
-        discount: this.parseMoney(discount),
-        paidAmount: this.parseMoney(paidAmount)
-      });
-    }
-
-    return result;
-  }
-
-  parseORWPDF(text) {
-    const result = {
-      paymentNumber: '',
-      paymentDate: '',
-      vendor: 'ORW USA, INC.',
-      customer: '',
-      invoices: []
-    };
-
-    const checkMatch = text.match(/(\d{5})\s+09\/15\/25/);
-    if (checkMatch) result.paymentNumber = checkMatch[1];
-
-    const dateMatch = text.match(/(\d{2}\/\d{2}\/\d{2,4})/);
-    if (dateMatch) result.paymentDate = this.normalizeDate(dateMatch[1]);
-
-    const customerMatch = text.match(/(?:PAY TO THE ORDER OF|ARTEC INDUSTRIES)/i);
-    if (customerMatch) result.customer = 'ARTEC INDUSTRIES';
-
-    const invoicePattern = /(\d{5})\s+(\d{2}\/\d{2}\/\d{2})\s+([\d,]+\.\d{2})\s+([\d.]+)\s+([\d.]+)\s+([\d,]+\.\d{2})/g;
-    let match;
-
-    while ((match = invoicePattern.exec(text)) !== null) {
-      const [_, invoiceNum, invoiceDate, amount, discounts, deductions, netAmount] = match;
-      result.invoices.push({
-        invoice: invoiceNum,
-        date: this.normalizeDate(invoiceDate),
-        amount: this.parseMoney(amount),
-        discount: this.parseMoney(discounts),
-        paidAmount: this.parseMoney(netAmount)
-      });
-    }
-
-    return result;
-  }
-
-  parseGenericPDF(text) {
-    const result = {
-      paymentNumber: '',
-      paymentDate: '',
-      vendor: '',
-      customer: '',
-      invoices: []
-    };
-
-    const paymentPatterns = [
-      /Payment\s+(?:Number|#)[\s:]+([A-Z0-9-]+)/i,
-      /Check\s+(?:Number|#)[\s:]+([A-Z0-9-]+)/i,
-      /EFT[\s#]*(\d+)/i,
-      /Reference[\s:]+([A-Z0-9-]+)/i
-    ];
-
-    for (const pattern of paymentPatterns) {
-      const match = text.match(pattern);
-      if (match) {
-        result.paymentNumber = match[1];
-        break;
-      }
-    }
-
-    const dateMatch = text.match(/(\d{1,2}[-\/]\d{1,2}[-\/]\d{2,4})/);
-    if (dateMatch) result.paymentDate = this.normalizeDate(dateMatch[1]);
-
-    const invoicePattern = /(?:Invoice|Inv)[\s#:]*(\d{4,})[^\d]*?([\d,]+\.\d{2})/gi;
-    let match;
-
-    while ((match = invoicePattern.exec(text)) !== null) {
-      result.invoices.push({
-        invoice: match[1],
-        amount: this.parseMoney(match[2]),
-        paidAmount: this.parseMoney(match[2])
-      });
-    }
-
-    return result;
-  }
-
-  async parseXLSX(file) {
-    if (!this.XLSX) {
-      // Provide diagnostic information
-      const diagnostics = [];
-      diagnostics.push('❌ XLSX library failed to load');
-      
-      if (window.libraryStatus) {
-        diagnostics.push(`Library status: ${JSON.stringify(window.libraryStatus)}`);
-      }
-      
-      diagnostics.push('');
-      diagnostics.push('Possible causes:');
-      diagnostics.push('1. CDN is blocked by firewall/ad blocker');
-      diagnostics.push('2. Network connection issue');
-      diagnostics.push('3. Script tag missing from HTML');
-      diagnostics.push('');
-      diagnostics.push('Solution: Check browser console (F12) for network errors');
-      
-      throw new Error(diagnostics.join('\n'));
-    }
-
-    const arrayBuffer = await file.arrayBuffer();
-    const workbook = this.XLSX.read(arrayBuffer, { type: 'array' });
-    const sheetName = workbook.SheetNames[0];
-    const worksheet = workbook.Sheets[sheetName];
-    const data = this.XLSX.utils.sheet_to_json(worksheet, { header: 1 });
-    return this.parseXLSXData(data);
-  }
-
-  parseXLSXData(data) {
-    const result = {
-      paymentNumber: '',
-      paymentDate: '',
-      vendor: '',
-      customer: '',
-      invoices: []
-    };
-
-    if (data.length === 0) return result;
-
-    let headerRow = -1;
-    let headers = [];
-
-    for (let i = 0; i < Math.min(10, data.length); i++) {
-      const row = data[i];
-      const rowStr = row.join('').toLowerCase();
-      if (rowStr.includes('invoice') || rowStr.includes('payment')) {
-        headerRow = i;
-        headers = row.map(h => String(h || '').toLowerCase().trim());
-        break;
-      }
-    }
-
-    if (headerRow === -1) {
-      console.warn('Could not find header row in XLSX');
-      return result;
-    }
-
-    const colMap = {
-      invoice: this.findColumn(headers, ['docnum', 'invoice', 'inv', 'document', 'inv ref', 'invoice no', 'doc num']),
-      date: this.findColumn(headers, ['invoice date', 'date', 'inv date', 'document date']),
-      amount: this.findColumn(headers, ['invoice total', 'amount', 'invoice amount', 'total']),
-      discount: this.findColumn(headers, ['discount total', 'discount', 'discount $', 'disc', 'cash discount']),
-      paid: this.findColumn(headers, ['total payment', 'paid', 'paid amount', 'payment', 'net amount']),
-      customer: this.findColumn(headers, ['bp number', 'customer', 'vendor', 'payer', 'bp']),
-      paymentNum: this.findColumn(headers, ['payment/op number', 'payment number', 'payment #', 'check number']),
-      paymentDate: this.findColumn(headers, ['payment posting date', 'payment date', 'posting date'])
-    };
-
-    for (let i = 0; i < Math.min(headerRow, data.length); i++) {
-      const row = data[i];
-      const rowStr = row.join(' ').toLowerCase();
-      if (rowStr.includes('payment') && row.length >= 2) {
-        result.paymentNumber = String(row[1] || '');
-      }
-      if (rowStr.includes('date') && row.length >= 2) {
-        const dateVal = row[1];
-        if (dateVal) result.paymentDate = this.normalizeDate(dateVal);
-      }
-    }
-
-    // Extract customer and payment info from data rows if available
-    let firstDataRow = null;
-    for (let i = headerRow + 1; i < data.length; i++) {
-      const row = data[i];
-      if (!row || row.length === 0) continue;
-      
-      const invoiceNum = row[colMap.invoice];
-      if (!invoiceNum) continue;
-      
-      firstDataRow = row;
-      break;
-    }
-
-    // Get customer name and payment info from first data row
-    if (firstDataRow) {
-      if (colMap.customer >= 0 && firstDataRow[colMap.customer]) {
-        result.customer = String(firstDataRow[colMap.customer]).trim();
-      }
-      if (colMap.paymentNum >= 0 && firstDataRow[colMap.paymentNum]) {
-        result.paymentNumber = String(firstDataRow[colMap.paymentNum]).trim();
-      }
-      if (colMap.paymentDate >= 0 && firstDataRow[colMap.paymentDate]) {
-        result.paymentDate = this.normalizeDate(firstDataRow[colMap.paymentDate]);
-      }
-    }
-
-    for (let i = headerRow + 1; i < data.length; i++) {
-      const row = data[i];
-      if (!row || row.length === 0) continue;
-
-      const invoiceNum = row[colMap.invoice];
-      if (!invoiceNum) continue;
-
-      const invoice = { invoice: String(invoiceNum).trim() };
-
-      if (colMap.date >= 0 && row[colMap.date]) {
-        invoice.date = this.normalizeDate(row[colMap.date]);
-      }
-      if (colMap.amount >= 0) {
-        invoice.amount = this.parseMoney(row[colMap.amount]);
-      }
-      if (colMap.discount >= 0) {
-        invoice.discount = this.parseMoney(row[colMap.discount]);
-      }
-      if (colMap.paid >= 0) {
-        invoice.paidAmount = this.parseMoney(row[colMap.paid]);
-      } else if (invoice.amount && invoice.discount) {
-        invoice.paidAmount = invoice.amount - invoice.discount;
-      }
-
-      result.invoices.push(invoice);
-    }
-
-    return result;
-  }
-
-  async parseCSV(file) {
-    const text = await file.text();
-    const lines = text.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
-
-    const result = {
-      paymentNumber: '',
-      paymentDate: '',
-      vendor: '',
-      customer: '',
-      invoices: []
-    };
-
-    for (let i = 0; i < Math.min(3, lines.length); i++) {
-      const line = lines[i];
-      const accountMatch = line.match(/Account\s+Number[\s:]+(\d+)/i);
-      if (accountMatch) result.paymentNumber = accountMatch[1];
-    }
-
-    let headerRow = -1;
-    let headers = [];
-
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i].toLowerCase();
-      if (line.includes('invoice') && (line.includes('amount') || line.includes('payment'))) {
-        headerRow = i;
-        headers = this.parseCSVLine(lines[i]).map(h => h.toLowerCase().trim());
-        break;
-      }
-    }
-
-    if (headerRow === -1) {
-      console.warn('Could not find header row in CSV');
-      return result;
-    }
-
-    const colMap = {
-      invoice: this.findColumn(headers, ['docnum', 'invoice', 'inv', 'document', 'doc num', 'invoice no']),
-      date: this.findColumn(headers, ['invoice date', 'date', 'inv date', 'document date']),
-      amount: this.findColumn(headers, ['invoice total', 'invoice amount', 'amount']),
-      discount: this.findColumn(headers, ['discount total', 'cash discount', 'discount']),
-      paid: this.findColumn(headers, ['total payment', 'payment amount', 'paid', 'paid amount', 'net amount']),
-      customer: this.findColumn(headers, ['bp number', 'customer', 'vendor', 'payer', 'bp']),
-      paymentNum: this.findColumn(headers, ['payment/op number', 'payment number', 'payment #', 'check number']),
-      paymentDate: this.findColumn(headers, ['payment posting date', 'payment date', 'posting date'])
-    };
-
-    for (let i = headerRow + 1; i < lines.length; i++) {
-      const cells = this.parseCSVLine(lines[i]);
-      if (cells.length === 0 || !cells[colMap.invoice]) continue;
-
-      const invoice = { invoice: String(cells[colMap.invoice]).trim() };
-
-      if (colMap.date >= 0 && cells[colMap.date]) {
-        invoice.date = this.normalizeDate(cells[colMap.date]);
-      }
-      if (colMap.amount >= 0) {
-        invoice.amount = this.parseMoney(cells[colMap.amount]);
-      }
-      if (colMap.discount >= 0) {
-        invoice.discount = this.parseMoney(cells[colMap.discount]);
-      }
-      if (colMap.paid >= 0) {
-        invoice.paidAmount = this.parseMoney(cells[colMap.paid]);
-      }
-      
-      // Extract customer and payment info from first row
-      if (result.invoices.length === 0) {
-        if (colMap.customer >= 0 && cells[colMap.customer]) {
-          result.customer = String(cells[colMap.customer]).trim();
-        }
-        if (colMap.paymentNum >= 0 && cells[colMap.paymentNum]) {
-          result.paymentNumber = String(cells[colMap.paymentNum]).trim();
-        }
-        if (colMap.paymentDate >= 0 && cells[colMap.paymentDate]) {
-          result.paymentDate = this.normalizeDate(cells[colMap.paymentDate]);
-        }
-      }
-
-      result.invoices.push(invoice);
-    }
-
-    return result;
-  }
-
-  parseCSVLine(line) {
-    const cells = [];
-    let current = '';
-    let inQuotes = false;
-
-    for (let i = 0; i < line.length; i++) {
-      const char = line[i];
-      if (char === '"') {
-        if (inQuotes && line[i + 1] === '"') {
-          current += '"';
-          i++;
-        } else {
-          inQuotes = !inQuotes;
-        }
-      } else if (char === ',' && !inQuotes) {
-        cells.push(current.trim());
-        current = '';
-      } else {
-        current += char;
-      }
-    }
-
-    cells.push(current.trim());
-    return cells;
-  }
-
-  findColumn(headers, possibleNames) {
-    for (const name of possibleNames) {
-      const index = headers.findIndex(h => h.includes(name));
-      if (index >= 0) return index;
-    }
-    return -1;
-  }
-
-  parseMoney(value) {
-    if (typeof value === 'number') return value;
-    if (!value) return 0;
-    const str = String(value).replace(/[$,]/g, '').trim();
-    const num = parseFloat(str);
-    return isNaN(num) ? 0 : num;
-  }
-
-  normalizeDate(value) {
-    if (!value) return '';
-    if (typeof value === 'number' && value > 40000) {
-      const date = new Date((value - 25569) * 86400 * 1000);
-      return date.toISOString().split('T')[0];
-    }
-
-    const str = String(value).trim();
-    const mdy = str.match(/(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})/);
-    if (mdy) {
-      let [_, month, day, year] = mdy;
-      if (year.length === 2) {
-        year = parseInt(year) > 50 ? '19' + year : '20' + year;
-      }
-      return `${year.padStart(4, '0')}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`;
-    }
-
-    const ymd = str.match(/(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})/);
-    if (ymd) {
-      const [_, year, month, day] = ymd;
-      return `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`;
-    }
-
-    try {
-      const date = new Date(str);
-      if (!isNaN(date.getTime())) {
-        return date.toISOString().split('T')[0];
-      }
-    } catch (e) {
-      // Ignore
-    }
-
-    return '';
-  }
+  return { valid: true };
 }
 
-// ============================================================================
-// END OF REMITTANCE PARSER CLASS
-// ============================================================================
+function validateDate(dateStr) {
+  if (!dateStr) {
+    return { valid: false, message: 'Date is required' };
+  }
+  const date = new Date(dateStr);
+  if (isNaN(date.getTime())) {
+    return { valid: false, message: 'Invalid date format' };
+  }
+  // Check if date is in reasonable range (not too far in past or future)
+  const now = new Date();
+  const yearAgo = new Date();
+  yearAgo.setFullYear(now.getFullYear() - 1);
+  const yearFromNow = new Date();
+  yearFromNow.setFullYear(now.getFullYear() + 1);
+
+  if (date < yearAgo) {
+    logger.warn('Date is more than a year in the past');
+  }
+  if (date > yearFromNow) {
+    return { valid: false, message: 'Date cannot be more than a year in the future' };
+  }
+  return { valid: true };
+}
+
+function validateCustomerName(name) {
+  if (!name || name.trim().length === 0) {
+    return { valid: false, message: 'Customer name is required' };
+  }
+  if (name.length < 2) {
+    return { valid: false, message: 'Customer name is too short' };
+  }
+  if (name.length > 200) {
+    return { valid: false, message: 'Customer name is too long' };
+  }
+  return { valid: true };
+}
 
 // Export/CSV functions
 function csvEscape(value) {
@@ -960,7 +282,77 @@ function exportCSV() {
 // Button handlers
 $('#btnExportCSV').onclick = exportCSV;
 $('#btnPrint').onclick = () => window.print();
-$('#btnSave').onclick = () => toast('Payment recorded successfully!');
+$('#btnSave').onclick = async () => {
+  try {
+    // Clear previous validation errors
+    ui.clearValidationErrors();
+
+    // Validate customer name
+    const nameValidation = validateCustomerName(state.payer);
+    if (!nameValidation.valid) {
+      ui.showValidationError('payer', nameValidation.message);
+      toast(nameValidation.message, 'warning');
+      return;
+    }
+
+    // Validate date if provided
+    if (state.date) {
+      const dateValidation = validateDate(state.date);
+      if (!dateValidation.valid) {
+        ui.showValidationError('paydate', dateValidation.message);
+        toast(dateValidation.message, 'warning');
+        return;
+      }
+    }
+
+    // Validate amount
+    const amountValidation = validateAmount(state.amountReceived);
+    if (!amountValidation.valid) {
+      ui.showValidationError('amountReceived', amountValidation.message);
+      toast(amountValidation.message, 'warning');
+      return;
+    }
+
+    // Validate we have invoices
+    if (state.invoices.length === 0) {
+      toast('Please add at least one invoice', 'warning');
+      return;
+    }
+
+    // Confirm save
+    const confirmed = await ui.confirm(
+      `Save payment record for ${state.payer}?\nAmount: ${fmtMoney(state.amountReceived)}`,
+      'Record Payment'
+    );
+
+    if (!confirmed) return;
+
+    // Save to history
+    const recordId = saveRemittanceRecord({
+      ...state,
+      recordedAt: new Date().toISOString()
+    });
+
+    // Show success
+    toast('Payment recorded successfully!', 'success');
+    logger.success('Payment recorded with ID:', recordId);
+
+    // Ask if user wants to clear and start new
+    const startNew = await ui.confirm(
+      'Payment saved! Start a new payment entry?',
+      'Success'
+    );
+
+    if (startNew) {
+      resetState();
+      updateStatus(statusDefault);
+    }
+
+  } catch (error) {
+    logger.error('Failed to save payment:', error);
+    toast('Failed to save payment', 'error');
+  }
+};
 $('#currency').onchange = () => render();
 
 $('#payer').oninput = e => { state.payer = e.target.value; render(); };
@@ -1060,23 +452,32 @@ fileInput.onchange = (e) => {
 // Main file handler
 async function handleFile(f) {
   try {
-    updateStatus(`Capturing ${f.name}…`);
-    
+    // Validate file first
+    validateFile(f);
+
+    // Show loading indicator
+    ui.loading.show(`Processing ${f.name}...`);
+    updateStatus(`Processing ${f.name}...`);
+
     // Use parser
     const parser = new RemittanceParser();
+
+    // Parse the file
+    ui.loading.updateProgress(20, 'Reading file...');
     const result = await parser.parseFile(f);
-    
-    console.log('=== PARSER RESULT ===');
-    console.log('Customer:', result.customer);
-    console.log('Vendor:', result.vendor);
-    console.log('Payment Date:', result.paymentDate);
-    console.log('Invoices count:', result.invoices.length);
-    console.log('Full result:', result);
-    
+
+    ui.loading.updateProgress(80, 'Extracting data...');
+
+    logger.info('Parse result:', result.invoices.length, 'invoices found');
+
+    // Validate we got some data
+    if (!result.invoices || result.invoices.length === 0) {
+      throw new Error('No invoice data found in this file');
+    }
+
     // Clear existing state
     state = initialState();
-    console.log('State cleared');
-    
+
     // Apply payment info
     // For AP (Accounts Payable) exports like SAP:
     //   - "customer" field (BP number) = VENDOR receiving payment
@@ -1084,10 +485,10 @@ async function handleFile(f) {
     // For AR (Accounts Receivable) exports:
     //   - "customer" field = CUSTOMER making payment
     //   - Vendor = us (recipient)
-    
+
     // Check if this looks like an AP report (has BP number and payment to vendor)
     const isAccountsPayable = result.customer && !result.vendor;
-    
+
     if (isAccountsPayable) {
       // AP report: Leave payer blank (user's company), put BP in memo
       state.payer = '';  // User needs to fill this in
@@ -1106,18 +507,11 @@ async function handleFile(f) {
       state.payer = result.customer || result.vendor || '';
       state.vendor = result.vendor || '';
     }
-    
+
     state.date = result.paymentDate || '';
-    
-    console.log('=== STATE AFTER PAYMENT INFO ===');
-    console.log('state.payer (who sent payment):', state.payer);
-    console.log('state.vendor (who received payment):', state.vendor);
-    console.log('state.date:', state.date);
-    
+
     // Process invoices
     result.invoices.forEach((inv, idx) => {
-      console.log(`Processing invoice ${idx + 1}:`, inv);
-      
       const invoice = {
         invoice: inv.invoice,
         date: inv.date || '',
@@ -1125,54 +519,61 @@ async function handleFile(f) {
         open: inv.paidAmount || inv.amount || 0,
         original: inv.originalAmount || inv.amount || 0
       };
-      
+
       if (inv.discount) {
         invoice.discount = inv.discount;
       }
-      
+
       if (inv.notes || inv.description) {
         invoice.description = inv.notes || inv.description;
       }
-      
-      console.log('Calling upsertInvoice with:', invoice);
+
       upsertInvoice(invoice);
     });
-    
-    console.log('=== STATE AFTER INVOICES ===');
-    console.log('state.invoices:', state.invoices);
-    
+
     // Calculate total amount received
     if (!state.amountReceived && state.invoices.length) {
       state.amountReceived = state.invoices.reduce(
-        (sum, inv) => sum + (inv.applied || 0), 
+        (sum, inv) => sum + (inv.applied || 0),
         0
       );
     }
-    
-    console.log('=== STATE BEFORE RENDER ===');
-    console.log('state.amountReceived:', state.amountReceived);
-    console.log('Full state:', state);
-    
+
+    ui.loading.updateProgress(100, 'Complete!');
+
     render();
-    
-    console.log('=== AFTER RENDER ===');
-    console.log('Payer input value:', $('#payer')?.value);
-    console.log('Date input value:', $('#paydate')?.value);
-    console.log('Amount input value:', $('#amountReceived')?.value);
-    
-    const summary = `Extracted ${result.invoices.length} invoice(s) from ${result.vendor || 'remittance'}`;
+
+    const summary = `✓ Extracted ${result.invoices.length} invoice(s) from ${result.vendor || 'remittance'}`;
     updateStatus(summary);
-    toast('Document captured successfully!');
-    
+    toast('Document captured successfully!', 'success');
+
+    logger.success('File processed successfully');
+
   } catch (err) {
-    console.error('Capture failed', err);
-    toast('Capture failed. See console for details.');
-    updateStatus(err?.message || 'Capture failed.');
+    logger.error('Capture failed:', err);
+    showError(err, toastEl);
+    updateStatus('Capture failed. Please try again or enter data manually.');
+  } finally {
+    // Always hide loading indicator
+    ui.loading.hide();
   }
 }
 
 // Initialize
 window.addEventListener('load', () => {
-  render();
+  logger.info('Application loaded');
+
+  // Check for unsaved data and prompt to restore
+  dataPersistence.promptRestoreData('remittance_current_state', (savedState) => {
+    state = savedState;
+    render();
+    toast('Previous session restored', 'info', 5000);
+  });
+
+  // If no restoration, just render default state
+  if (!dataPersistence.hasUnsavedData('remittance_current_state')) {
+    render();
+  }
+
   updateStatus(statusDefault);
 });

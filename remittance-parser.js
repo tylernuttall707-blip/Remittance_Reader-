@@ -1,30 +1,49 @@
 /**
  * Robust Remittance Parser
  * Handles PDF, XLSX, and CSV remittance files with format-specific parsing
+ * Now with OCR support for scanned documents
  */
+
+// Import logger if available
+let logger = console; // Fallback to console
+if (typeof window !== 'undefined' && window.logger) {
+  logger = window.logger;
+}
 
 class RemittanceParser {
   constructor() {
     this.pdfjsLib = null;
     this.XLSX = null;
+    this.Tesseract = null;
   }
 
   /**
    * Initialize required libraries
    */
   async init() {
-    // Load PDF.js if not already loaded
-    if (typeof pdfjsLib !== 'undefined') {
-      this.pdfjsLib = pdfjsLib;
-      if (!this.pdfjsLib.GlobalWorkerOptions?.workerSrc) {
-        this.pdfjsLib.GlobalWorkerOptions.workerSrc = 
-          'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.5.136/pdf.worker.min.mjs';
+    // Initialize PDF.js using dynamic import (ESM module)
+    if (!this.pdfjsLib) {
+      try {
+        const pdfjs = await import('https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.5.136/pdf.min.mjs');
+        this.pdfjsLib = pdfjs.default || pdfjs;
+
+        if (this.pdfjsLib.GlobalWorkerOptions) {
+          this.pdfjsLib.GlobalWorkerOptions.workerSrc =
+            'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.5.136/pdf.worker.min.mjs';
+        }
+      } catch (error) {
+        throw new Error('Failed to load PDF.js library: ' + error.message);
       }
     }
 
     // Check for XLSX library
     if (typeof XLSX !== 'undefined') {
       this.XLSX = XLSX;
+    }
+
+    // Check for Tesseract (OCR)
+    if (typeof Tesseract !== 'undefined') {
+      this.Tesseract = Tesseract;
     }
   }
 
@@ -37,7 +56,7 @@ class RemittanceParser {
     const ext = this.getExtension(file.name);
     const fileType = this.detectFileType(file, ext);
 
-    console.log(`Parsing ${file.name} as ${fileType}`);
+    logger.info(`Parsing ${file.name} as ${fileType}`);
 
     switch (fileType) {
       case 'pdf':
@@ -95,9 +114,23 @@ class RemittanceParser {
       fullText += pageText + '\n';
     }
 
+    // Check if we got meaningful text
+    const hasText = fullText.trim().length > 50;
+
+    // If no text found, this is likely an image-based PDF - use OCR
+    if (!hasText) {
+      logger.info('No text found in PDF - attempting OCR...');
+      try {
+        fullText = await this.performOCR(pdf);
+        logger.success('OCR completed. Extracted text length:', fullText.length);
+      } catch (ocrError) {
+        throw new Error('This appears to be a scanned/image PDF. OCR extraction failed: ' + ocrError.message);
+      }
+    }
+
     // Detect PDF format and parse accordingly
     const format = this.detectPDFFormat(fullText);
-    console.log(`Detected PDF format: ${format}`);
+    logger.info(`Detected PDF format: ${format}`);
 
     switch (format) {
       case 'meyer':
@@ -109,6 +142,71 @@ class RemittanceParser {
       default:
         return this.parseGenericPDF(fullText);
     }
+  }
+
+  /**
+   * Perform OCR on PDF pages using Tesseract.js
+   */
+  async performOCR(pdf) {
+    if (!this.Tesseract) {
+      throw new Error('Tesseract.js library not loaded');
+    }
+
+    let fullText = '';
+
+    // Update status if available
+    if (typeof updateStatus === 'function') {
+      updateStatus('Scanning document with OCR...');
+    }
+
+    logger.info(`Starting OCR on ${pdf.numPages} page(s)...`);
+
+    for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
+      logger.info(`Running OCR on page ${pageNum}/${pdf.numPages}...`);
+
+      if (typeof updateStatus === 'function') {
+        updateStatus(`OCR scanning page ${pageNum} of ${pdf.numPages}...`);
+      }
+
+      // Update loading progress if available
+      if (typeof window !== 'undefined' && window.ui && window.ui.loading) {
+        const progress = 20 + (pageNum / pdf.numPages) * 60; // 20-80% range for OCR
+        window.ui.loading.updateProgress(progress, `OCR page ${pageNum}/${pdf.numPages}...`);
+      }
+
+      const page = await pdf.getPage(pageNum);
+
+      // Render page to canvas
+      const viewport = page.getViewport({ scale: 2.0 }); // Higher scale for better OCR
+      const canvas = document.createElement('canvas');
+      const context = canvas.getContext('2d');
+      canvas.width = viewport.width;
+      canvas.height = viewport.height;
+
+      await page.render({
+        canvasContext: context,
+        viewport: viewport
+      }).promise;
+
+      // Run OCR on canvas
+      const { data: { text } } = await this.Tesseract.recognize(
+        canvas,
+        'eng',
+        {
+          logger: m => {
+            if (m.status === 'recognizing text') {
+              logger.debug(`OCR progress: ${Math.round(m.progress * 100)}%`);
+            }
+          }
+        }
+      );
+
+      logger.debug(`Page ${pageNum} extracted ${text.length} characters`);
+      fullText += text + '\n';
+    }
+
+    logger.success('OCR complete, extracted', fullText.length, 'total characters');
+    return fullText;
   }
 
   /**
@@ -401,7 +499,7 @@ class RemittanceParser {
     }
 
     if (headerRow === -1) {
-      console.warn('Could not find header row in XLSX');
+      logger.warn('Could not find header row in XLSX');
       return result;
     }
 
@@ -505,7 +603,7 @@ class RemittanceParser {
     }
 
     if (headerRow === -1) {
-      console.warn('Could not find header row in CSV');
+      logger.warn('Could not find header row in CSV');
       return result;
     }
 
@@ -685,9 +783,15 @@ class RemittanceParser {
   }
 }
 
-// Export for use in Node.js or browser
+// Export for use in Node.js or as ES module
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = RemittanceParser;
-} else if (typeof window !== 'undefined') {
+}
+
+// Always make available on window for backward compatibility
+if (typeof window !== 'undefined') {
   window.RemittanceParser = RemittanceParser;
 }
+
+// ES module export
+export default RemittanceParser;
