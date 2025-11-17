@@ -212,12 +212,15 @@
   </script>
   
   <!-- Tesseract.js for OCR (reading text from images/scanned PDFs) -->
-  <script 
+  <script
     src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"
     onload="window.libraryStatus.tesseract = true; console.log('✅ Tesseract library loaded successfully!');"
     onerror="console.error('❌ Failed to load Tesseract library from CDN');">
   </script>
-  
+
+  <!-- Remittance Parser Module -->
+  <script type="module" src="remittance-parser.js"></script>
+
   <!-- Main application script -->
   <script type="module" src="script.js"></script>
 </body>
