@@ -363,14 +363,14 @@ class EnhancedInvoiceParser {
     const result = { invoiceDate: '', dueDate: '' };
 
     // Look for "Invoice Date" followed by date
-    const invDateMatch = text.match(/Invoice\s+Date\s+(\d{1,2}\/\d{1,2}\/\d{4})/i);
+    const invDateMatch = text.match(/Invoice\s+Date[\s:]+(\d{1,2}\/\d{1,2}\/\d{2,4})/i);
     if (invDateMatch) {
       result.invoiceDate = this.normalizeDate(invDateMatch[1]);
     }
 
     // Look for "Order Date" as alternative
     if (!result.invoiceDate) {
-      const orderDateMatch = text.match(/Order\s+Date\s+(\d{1,2}\/\d{1,2}\/\d{4})/i);
+      const orderDateMatch = text.match(/Order\s+Date[\s:]+(\d{1,2}\/\d{1,2}\/\d{2,4})/i);
       if (orderDateMatch) {
         result.invoiceDate = this.normalizeDate(orderDateMatch[1]);
       }
@@ -381,6 +381,22 @@ class EnhancedInvoiceParser {
       const dateMatch = text.match(/Date[\s:]+(\d{1,2}\/\d{1,2}\/\d{2,4})/i);
       if (dateMatch) {
         result.invoiceDate = this.normalizeDate(dateMatch[1]);
+      }
+    }
+
+    // NEW: Find unlabeled dates - look for dates that appear BEFORE payment terms
+    if (!result.invoiceDate) {
+      // Pattern: date followed by payment terms (Net 30, etc)
+      const beforeTermsMatch = text.match(/(\d{1,2}\/\d{1,2}\/\d{2,4})\s+(?:Net|NET)\s+\d+/);
+      if (beforeTermsMatch) {
+        result.dueDate = this.normalizeDate(beforeTermsMatch[1]);
+      }
+
+      // Look for TWO dates near each other (common pattern: invoice date then due date)
+      const twoDateMatch = text.match(/(\d{1,2}\/\d{1,2}\/\d{2,4})\s+(?:Net|NET)?\s*\d*\s*(?:Days?|DAYS?)?\s+(\d{1,2}\/\d{1,2}\/\d{2,4})/);
+      if (twoDateMatch) {
+        result.dueDate = this.normalizeDate(twoDateMatch[1]);
+        result.invoiceDate = this.normalizeDate(twoDateMatch[2]);
       }
     }
 
