@@ -446,6 +446,7 @@ drop.addEventListener('drop', async (e) => {
   logger.debug('Drop event triggered');
 
   let file = null;
+  let outlookErrorShown = false; // Track if we've shown the Outlook-specific error
 
   // Strategy 1: Try dataTransfer.items (preferred for email clients)
   if (e.dataTransfer?.items?.length > 0) {
@@ -482,6 +483,42 @@ drop.addEventListener('drop', async (e) => {
           item.getAsString(async (data) => {
             logger.debug(`String data from item ${i}:`, data.substring(0, 100));
 
+            // First, try to detect Outlook attachment JSON (check content, not just type)
+            if (data && data.trim().startsWith('{')) {
+              try {
+                const jsonData = JSON.parse(data);
+                logger.debug('Successfully parsed string data as JSON');
+
+                // Check for Outlook attachment format
+                if (jsonData.itemType === 'attachment' && jsonData.attachmentFiles) {
+                  logger.error('Outlook attachments cannot be accessed directly from drag-and-drop due to browser security restrictions');
+                  toast('⚠️ Cannot drag files directly from Outlook\n\nPlease:\n1. Save the attachment to your computer first\n2. Then drag it here or use the file picker button', 'error', 10000);
+                  outlookErrorShown = true;
+                  resolve();
+                  return;
+                }
+
+                // Check if it contains base64 file data (some email clients)
+                if (jsonData.data || jsonData.content) {
+                  logger.debug('Found base64 data in JSON, attempting to decode');
+                  const base64Data = jsonData.data || jsonData.content;
+                  const binaryString = atob(base64Data);
+                  const bytes = new Uint8Array(binaryString.length);
+                  for (let i = 0; i < binaryString.length; i++) {
+                    bytes[i] = binaryString.charCodeAt(i);
+                  }
+                  const blob = new Blob([bytes], { type: jsonData.type || 'application/octet-stream' });
+                  file = new File([blob], jsonData.name || 'dropped-file', { type: jsonData.type || 'application/octet-stream' });
+                  logger.info('Successfully decoded attachment from JSON:', file.name, file.type, `${(file.size / 1024).toFixed(2)}KB`);
+                  resolve();
+                  return;
+                }
+              } catch (jsonErr) {
+                logger.debug('String looks like JSON but failed to parse:', jsonErr.message);
+                // Not JSON, continue to other checks
+              }
+            }
+
             // Check if it's a blob URL or data URL
             if (data && (data.startsWith('blob:') || data.startsWith('data:'))) {
               logger.debug(`Found URL in string data: ${data.substring(0, 50)}...`);
@@ -512,39 +549,8 @@ drop.addEventListener('drop', async (e) => {
                 logger.error('Failed to fetch file from URL:', err.message);
               }
               resolve();
-            } else if (data && item.type === 'attachment') {
-              // Handle Outlook-style attachment JSON
-              logger.debug('Processing attachment type data');
-              try {
-                const jsonData = JSON.parse(data);
-                logger.debug('Parsed attachment JSON:', jsonData);
-
-                // Check for Outlook attachment format
-                if (jsonData.itemType === 'attachment' && jsonData.attachmentFiles) {
-                  logger.error('Outlook attachments cannot be accessed directly from drag-and-drop due to browser security restrictions');
-                  toast('⚠️ Cannot drag files from Outlook. Please download the attachment first, then drag it here or use the file picker.', 'error', 8000);
-                  resolve();
-                  return;
-                }
-
-                // Check if it contains base64 file data
-                if (jsonData.data || jsonData.content) {
-                  const base64Data = jsonData.data || jsonData.content;
-                  const binaryString = atob(base64Data);
-                  const bytes = new Uint8Array(binaryString.length);
-                  for (let i = 0; i < binaryString.length; i++) {
-                    bytes[i] = binaryString.charCodeAt(i);
-                  }
-                  const blob = new Blob([bytes], { type: jsonData.type || 'application/octet-stream' });
-                  file = new File([blob], jsonData.name || 'dropped-file', { type: jsonData.type || 'application/octet-stream' });
-                  logger.info('Successfully decoded attachment from JSON:', file.name, file.type, `${(file.size / 1024).toFixed(2)}KB`);
-                }
-              } catch (jsonErr) {
-                logger.debug('Failed to parse as JSON:', jsonErr.message);
-              }
-              resolve();
             } else if (data) {
-              logger.warn(`Got string data but it's not a recognized URL format:`, data.substring(0, 100));
+              logger.warn(`Got string data but it's not a recognized format:`, data.substring(0, 100));
               resolve();
             } else {
               logger.warn(`getAsString returned empty data for item ${i}`);
@@ -643,7 +649,7 @@ drop.addEventListener('drop', async (e) => {
           file = new File([blob], filename, { type: blob.type });
           logger.info('Successfully created file from URI:', file.name, file.type, `${(file.size / 1024).toFixed(2)}KB`);
         } else if (type === 'attachment' || type.includes('file')) {
-          // For 'attachment' type, the data might be base64 encoded file data
+          // For 'attachment' type, the data might be base64 encoded file data or Outlook metadata
           logger.debug('Attempting to decode attachment data');
 
           // Try to parse as JSON (some clients send metadata)
@@ -651,7 +657,15 @@ drop.addEventListener('drop', async (e) => {
             const jsonData = JSON.parse(data);
             logger.debug('Attachment data is JSON:', jsonData);
 
-            // Check if it contains file information
+            // Check for Outlook attachment format (shouldn't get here if Strategy 1 worked, but just in case)
+            if (jsonData.itemType === 'attachment' && jsonData.attachmentFiles) {
+              logger.error('Outlook attachments cannot be accessed directly from drag-and-drop');
+              toast('⚠️ Cannot drag files directly from Outlook\n\nPlease:\n1. Save the attachment to your computer first\n2. Then drag it here or use the file picker button', 'error', 10000);
+              outlookErrorShown = true;
+              break; // Exit the loop
+            }
+
+            // Check if it contains base64 file data
             if (jsonData.data || jsonData.content) {
               // Decode base64 data
               const base64Data = jsonData.data || jsonData.content;
@@ -714,14 +728,12 @@ drop.addEventListener('drop', async (e) => {
     handleFile(file);
   } else {
     logger.error('No file found in drop event');
-    // Note: Specific error message for Outlook attachments is already shown above
-    // Only show generic error if we didn't already show the Outlook-specific one
-    if (!e.dataTransfer?.items?.[0] || e.dataTransfer.items[0].type !== 'attachment') {
-      // Provide specific guidance based on what we detected
-      let errorMsg = 'Could not read the dropped file. ';
-      let suggestion = 'Try using the file picker button instead.';
 
-      toast(errorMsg + suggestion, 'error', 6000);
+    // Only show a generic error if we haven't already shown the Outlook-specific error
+    if (!outlookErrorShown) {
+      const errorMsg = 'Could not read the dropped file.';
+      const suggestion = 'Try saving the file to your computer first, then drag it here or use the file picker button.';
+      toast(errorMsg + ' ' + suggestion, 'error', 6000);
       logger.info('Suggestion:', suggestion);
     }
   }
